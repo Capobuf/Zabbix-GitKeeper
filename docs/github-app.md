@@ -1,6 +1,6 @@
 # GitHub App setup for Zabbix GitKeeper
 
-> **Current status:** GitKeeper is experimental. The GitHub App integration exists on the \`feat/gitkeeper-foundation\` branch, but has **not** been validated end-to-end against a live Zabbix installation. This is a configuration guide, not a release certification.
+> **Current status:** GitKeeper is experimental. The GitHub App integration exists on the `feat/gitkeeper-foundation` branch, but has **not** been validated end-to-end against a live Zabbix installation. This is a configuration guide, not a release certification.
 
 ## Recommended approach: one App, any number of GitKeeper installations
 
@@ -37,9 +37,9 @@ These steps are for the **GitKeeper project maintainer**, not for every user who
 
 | GitHub App setting | Value / guidance |
 | --- | --- |
-| **GitHub App name** | \`Zabbix GitKeeper\`, if available; GitHub App names must be unique |
-| **Description** | \`Version and back up Zabbix configuration to private GitHub repositories.\` |
-| **Homepage URL** | \`https://github.com/Capobuf/Zabbix-GitKeeper\` |
+| **GitHub App name** | `Zabbix GitKeeper`, if available; GitHub App names must be unique |
+| **Description** | `Version and back up Zabbix configuration to private GitHub repositories.` |
+| **Homepage URL** | `https://github.com/Capobuf/Zabbix-GitKeeper` |
 | **Callback URL** | Leave blank. **Device Flow does not use it** |
 | **Expire user authorization tokens** | **Enabled** (recommended; worker refreshes them) |
 | **Request user authorization (OAuth) during installation** | **Disabled** (GitKeeper initiates Device Flow separately) |
@@ -65,16 +65,16 @@ Under **Permissions & events** configure:
 
 **Important:** enable *Repository creation* only if the in-app **Create private repository** button is required. Otherwise, leave it disabled: users can create a private repository on GitHub and grant the App access. Do **not** request broad *Administration: write* just to create repositories.
 
-The implementation currently supports **personal-account** repository creation through \`POST /user/repos\`, not automated organization repository creation. An organization's approval policies can independently restrict creation/installation. GitHub's repository-creation permission is a **repository permission**; follow the labels displayed in the registration UI.
+The implementation currently supports **personal-account** repository creation through `POST /user/repos`, not automated organization repository creation. An organization's approval policies can independently restrict creation/installation. GitHub's repository-creation permission is a **repository permission**; follow the labels displayed in the registration UI.
 
 When App permissions are increased later, existing installations may need to approve the new permissions before functionality becomes available.
 
 4. Click **Create GitHub App**.
 5. On the resulting App settings page, copy the **Client ID**. **Client ID is not App ID**. The Client ID is a **public identifier**, not a secret.
-6. Record the real App **slug** shown by GitHub. Its installation URL has the form \`https://github.com/apps/APP_SLUG/installations/new\`; replace \`APP_SLUG\` with the actual value. Do not assume the slug until the App has been created.
+6. Record the real App **slug** shown by GitHub. Its installation URL has the form `https://github.com/apps/APP_SLUG/installations/new`; replace `APP_SLUG` with the actual value. Do not assume the slug until the App has been created.
 7. Publish **only** the Client ID and installation URL with GitKeeper's release documentation. **Do not publish** any client secret, signing key or private key. This architecture does not need them.
 
-**Recommended future packaging improvement:** once the project's real GitHub App exists, ship the **public Client ID as a default** in official releases. Then the end user will not need to know or type a Client ID. Keep a \`--client-id\` override for development or forks. This improvement is **not implemented yet**.
+**Recommended future packaging improvement:** once the project's real GitHub App exists, ship the **public Client ID as a default** in official releases. Then the end user will not need to know or type a Client ID. Keep a `--client-id` override for development or forks. This improvement is **not implemented yet**.
 
 ### Maintainer verification
 
@@ -94,14 +94,14 @@ When App permissions are increased later, existing installations may need to app
 4. Approve the App's permissions. Installing the App does not automatically authorize a specific Zabbix installation's user access token.
 5. Install GitKeeper on the Linux Zabbix VM with the documented installer. For the current experimental branch, supply the **real shared App Client ID**:
 
-   \`\`\`bash
+   ```bash
    sudo bash scripts/install.sh \
      --frontend-root /verified/path/to/zabbix/frontend \
      --web-user ACTUAL_PHP_PROCESS_USER \
      --client-id ACTUAL_GITHUB_APP_CLIENT_ID
-   \`\`\`
+   ```
 
-   The \`--frontend-root\` argument can be omitted only when the installer safely detects exactly one frontend. See [experimental installation guide](installation.md). **This terminal command installs GitKeeper; it is not an alternative GitHub authentication method.** The administrator does not need \`gh auth login\`.
+   The `--frontend-root` argument can be omitted only when the installer safely detects exactly one frontend. See [experimental installation guide](installation.md). **This terminal command installs GitKeeper; it is not an alternative GitHub authentication method.** The administrator does not need `gh auth login`.
 6. In Zabbix open **Administration → General → Modules**, scan the module directory and enable **Zabbix GitKeeper**.
 7. Open **Administration → GitKeeper** and configure a suitable **Zabbix API token** separately: GitHub authentication does not grant permission to read Zabbix configuration.
 8. Select **Connect GitHub**. GitKeeper shows a short-lived user code and the verified URL **https://github.com/login/device**.
@@ -126,7 +126,7 @@ An App-created repository is normally added to its installation automatically ac
 ## Token lifecycle and security
 
 - The **Client ID can be public**; it identifies the App. Never treat it as a credential.
-- A Device Flow user token begins with \`ghu_\`. The local worker stores access/refresh tokens only in its restricted private storage, never in the Git repository or web page.
+- A Device Flow user token begins with `ghu_`. The local worker stores access/refresh tokens only in its restricted private storage, never in the Git repository or web page.
 - With expiring tokens enabled, GitHub documents an **8-hour access token** and a **6-month refresh token**. Refreshing rotates both; the worker must persist the new pair safely.
 - A GitHub App **Device Flow** refresh operation uses the Client ID **without a client secret**.
 - Access is the **intersection** of the user's permissions, App permissions and repositories granted to the App installation. Organization approval or SAML requirements may impose additional steps.
@@ -139,7 +139,7 @@ An App-created repository is normally added to its installation automatically ac
 | Symptom | Check |
 | --- | --- |
 | **Device flow disabled** | Enable **Device Flow** in the shared GitHub App settings |
-| **Invalid client credentials** | Confirm \`--client-id\` contains the App **Client ID**, not App ID or slug |
+| **Invalid client credentials** | Confirm `--client-id` contains the App **Client ID**, not App ID or slug |
 | **Authorization pending for a while** | Complete the verification on GitHub; polling follows the API interval and the local cron |
 | **No repositories listed** | App **installation** exists on the owning account, selected repo access is granted, and the logged-in GitHub user has write access |
 | **Repository created but missing** | Check installed App's **Repository access** and refresh the list |
