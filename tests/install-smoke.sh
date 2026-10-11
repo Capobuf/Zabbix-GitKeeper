@@ -25,6 +25,8 @@ bash "$SOURCE/scripts/install.sh" "${ARGS[@]}"
 [[ $(stat -c '%a' /var/lib/zabbix-gitkeeper/public) == 2750 ]]
 runuser -u www-data -- test ! -r /var/lib/zabbix-gitkeeper/private/settings.json
 runuser -u www-data -- test ! -w /opt/zabbix-gitkeeper/venv/bin/gitkeeper
+# PHP variables must remain literal for the PHP interpreter.
+# shellcheck disable=SC2016
 runuser -u www-data -- php -r '
 require $argv[1]; $q=new Modules\GitKeeper\Queue(); $q->submit("sync");
 ' "$TEMP_ROOT/frontend/modules/gitkeeper/includes/Queue.php"

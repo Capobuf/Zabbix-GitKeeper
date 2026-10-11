@@ -55,6 +55,8 @@ fi
 FRONTEND=$(realpath -e -- "$FRONTEND")
 [[ -f $FRONTEND/zabbix.php && -f $FRONTEND/include/defines.inc.php && -d $FRONTEND/modules ]] \
     || die 'The supplied path is not a Zabbix frontend with a modules directory.'
+# PHP, not the shell, expands $argv.
+# shellcheck disable=SC2016
 VERSION=$(php -r 'include $argv[1]; echo ZABBIX_VERSION;' "$FRONTEND/include/defines.inc.php")
 [[ $VERSION == 7.0.* || $VERSION == 7.4.* ]] || die 'This export policy targets Zabbix 7.0 and 7.4 only; real compatibility still requires verification.'
 MODULES=$(realpath -e -- "$FRONTEND/modules")
