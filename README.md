@@ -4,6 +4,8 @@
 
 > **Project status: specification / not implemented.** This README defines the intended product, technical boundaries, and acceptance criteria. Features described below must not be assumed to work until implemented and verified.
 
+**GitHub App configuration:** [Setup guide for maintainers and Zabbix administrators](docs/github-app.md). A single shared GitHub App is registered once; individual installations use Device Flow. No alternative GitHub authentication method is planned.
+
 Zabbix GitKeeper is a native Zabbix frontend module plus a lightweight local worker. After installation, an administrator connects a GitHub account, chooses or creates a **private** repository, selects the configuration categories to track, and saves. GitKeeper performs the first export automatically and continues on a configurable schedule. Errors, last run, and repository status are visible inside Zabbix.
 
 The product has **two complementary capabilities**, which must not be confused:
