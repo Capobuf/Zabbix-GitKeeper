@@ -64,7 +64,7 @@ class Worker:
         now = time.time()
         self.config.update(next_sync=now + self.config["interval"] * 60, retry_count=0, sync_pending=False)
         self.status.update(state="Completed", last_success=now, last_commit=commit, changed=changed,
-                           repository=repo, categories=coverage, error=None)
+                           repository=repo, categories=coverage, error=None, github="Ready", reconnect=False)
         atomic_json(self.config_path, self.config)
         self.flush()
 

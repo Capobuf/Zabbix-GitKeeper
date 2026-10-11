@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run only on a disposable Linux CI runner, never on a production Zabbix machine.
 set -euo pipefail
+trap 'echo "Installer smoke test failed at line $LINENO" >&2' ERR
 [[ ${GITHUB_ACTIONS:-} == true ]] || { echo 'This root smoke test is restricted to disposable GitHub Actions runners.' >&2; exit 1; }
 SOURCE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 TEMP_ROOT=$(mktemp -d)
@@ -21,6 +22,7 @@ bash "$SOURCE/scripts/install.sh" "${ARGS[@]}"
 [[ $(sha256sum /var/lib/zabbix-gitkeeper/private/settings.json) == "$before" ]]
 [[ $(sha256sum /etc/cron.d/zabbix-gitkeeper) == "$cron_before" ]]
 [[ $(grep -c '^\* \* \* \* \* ' /etc/cron.d/zabbix-gitkeeper) == 1 ]]
+stat -c '%a %U:%G %n' /var/lib/zabbix-gitkeeper/private /var/lib/zabbix-gitkeeper/public
 [[ $(stat -c '%a' /var/lib/zabbix-gitkeeper/private) == 700 ]]
 [[ $(stat -c '%a' /var/lib/zabbix-gitkeeper/public) == 2750 ]]
 runuser -u www-data -- test ! -r /var/lib/zabbix-gitkeeper/private/settings.json

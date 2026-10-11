@@ -339,6 +339,37 @@ class GitTests(unittest.TestCase):
         with self.assertRaises(Error):
             Publisher(self.root, {"private": False}, "fixture")
 
+    @patch("gitkeeper.worker.process_lock")
+    def test_queued_worker_to_real_git_and_periodic_unchanged_snapshot(self, lock):
+        lock.return_value.__enter__.return_value = True
+        root = self.root / "state"
+        for directory in ("private", "queue", "public"):
+            (root / directory).mkdir(parents=True, exist_ok=True)
+        installation = self.root / "worker.json"
+        atomic_json(installation, {"state_dir": str(root), "client_id": "fixture"})
+        atomic_json(root / "private/zabbix.json", {"url": "https://zabbix.example/api_jsonrpc.php", "token": TOKEN})
+        worker = Worker(installation)
+        atomic_json(worker.github.path, {"access_token": "ghu_fixture"})
+        worker.github.repository = Mock(return_value={"id": 42, "private": True, "full_name": "fixture/backup",
+                                                     "default_branch": "main"})
+        atomic_json(root / "queue" / ("a" * 32 + ".json"), {"id": "a" * 32, "operation": "save", "params": {
+            "settings": {"repository_id": 42, "categories": ["hosts", "templates", "actions"], "interval": 15}}})
+        exporter = Exporter({}, FakeAPI())
+        with patch("gitkeeper.worker.Exporter", return_value=exporter), patch("gitkeeper.worker.Publisher",
+                side_effect=lambda path, repo, token: LocalPublisher(path, self.remote)):
+            worker.tick()
+            self.assertEqual(worker.status["state"], "Completed")
+            self.assertEqual(worker.status["last_request"], "a" * 32)
+            self.assertGreater(worker.config["next_sync"], worker.status["last_success"])
+            first = worker.status["last_commit"]
+            worker.config["next_sync"] = 0
+            atomic_json(worker.config_path, worker.config)
+            worker.tick()
+            self.assertEqual(worker.status["last_commit"], first)
+            self.assertFalse(worker.status["changed"])
+        self.assertEqual(self.git("rev-list", "--count", "main", cwd=self.remote), "2")
+        self.assertNotIn(TOKEN, worker.public.read_text())
+
 
 class WorkerTests(unittest.TestCase):
     def setUp(self):
