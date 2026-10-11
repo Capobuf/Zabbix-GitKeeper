@@ -114,6 +114,8 @@ sudo -u gitkeeper /opt/zabbix-gitkeeper/venv/bin/gitkeeper --config /etc/zabbix-
 
 Network/rate-limit failures use bounded retries/backoff; rejected permissions, unclassified fields,
 incomplete enumeration and Git failures stop scheduling until **Sync now** or **Save & Sync**.
+Git remote transport failures/timeouts also use the bounded retry path; protected-branch and ordinary
+Git rejections stop without force-pushing.
 Refresh failure/revocation shows **Reconnect GitHub**. Git stderr and raw API errors are never exposed.
 Inspect the declared coverage/policy to diagnose unsupported fields, without uploading raw exports.
 

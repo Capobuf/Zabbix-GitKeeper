@@ -7,6 +7,17 @@ Zabbix version is certified. No customer data or real backup credentials were us
 
 ## Automated checks
 
+Executed successfully on 2026-10-11:
+
+- Local Python lint/compilation, 24 unittest cases (23 passed; POSIX lock test skipped on Windows),
+  PHP lint and controller/queue contracts, shell syntax, and wheel/sdist packaging.
+- [Linux CI](https://github.com/Capobuf/Zabbix-GitKeeper/actions/runs/38164485286): 24 tests passed
+  including the actual separate-process lock, PHP checks, ShellCheck, packaging and the root installer
+  fixture. Installer rerun and preserved-state uninstall passed. The CI fixture caught writable package
+  entrypoints; the installer now explicitly removes group/other write permissions after packaging.
+
+These are mock/fixture and local-Git results, not live Zabbix/GitHub App verification.
+
 Run the quick local checks from the source root (stop on first Python test failure):
 
 ```sh

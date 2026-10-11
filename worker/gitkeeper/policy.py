@@ -71,7 +71,8 @@ SCHEMAS = {
                            "opgroup": "target", "optemplate": "target", "opinventory": "opinventory",
                            "opconditions": "opcondition", "optag": "tags"}),
     "message": rule("mediatypeid", "default_msg", "subject message"),
-    "recipient": rule("usrgrpid userid operationid"), "target": rule("hostid groupid templateid operationid"),
+    "recipient": rule("usrgrpid userid operationid"),
+    "target": rule("hostid groupid templateid operationid opcommand_hstid opcommand_grpid"),
     "command": rule("scriptid"), "opinventory": rule("", "inventory_mode"),
     "opcondition": rule("opconditionid operationid", "conditiontype operator", "value"),
     "media": rule("mediatypeid name", "type status smtp_port smtp_security smtp_verify_peer smtp_verify_host "

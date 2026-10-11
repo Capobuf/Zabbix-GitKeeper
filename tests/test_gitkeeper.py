@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from zabbix_utils import APIRequestError, ProcessingError
+
 from gitkeeper.exporter import Exporter, Incomplete
 from gitkeeper.git import Publisher
 from gitkeeper.github import GitHub, Reconnect
@@ -54,7 +56,10 @@ class FakeAPI:
             "filter": {"evaltype": "0", "conditions": [{"conditiontype": "1", "operator": "0",
                                                        "value": SENTINEL, "formulaid": "A"}]},
             "operations": [{"operationtype": "0", "opmessage": {"default_msg": "0", "subject": SENTINEL,
-                                                                       "message": SENTINEL}}],
+                                                                       "message": SENTINEL}},
+                           {"operationtype": "1", "opcommand": {"scriptid": "1"},
+                            "opcommand_hst": [{"opcommand_hstid": "1", "hostid": "1"}],
+                            "opcommand_grp": [{"opcommand_grpid": "2", "groupid": "3"}]}],
             "recovery_operations": [], "update_operations": []}])
         self.mediatype = Collection([{"mediatypeid": "6", "name": "Mail", "type": "0", "status": "0",
             "message_templates": [{"eventsource": "0", "recovery": "0", "subject": SENTINEL, "message": SENTINEL}]}])
@@ -156,6 +161,17 @@ class CoreTests(unittest.TestCase):
         api.authentication.get.side_effect = RuntimeError(SENTINEL)
         with self.assertRaises(RuntimeError):
             Exporter({}, api)
+
+    def test_api_startup_errors_are_safe_and_transport_is_retryable(self):
+        api = FakeAPI()
+        api.authentication.get.side_effect = APIRequestError(SENTINEL)
+        with self.assertRaises(Error) as result:
+            Exporter({}, api)
+        self.assertNotIn(SENTINEL, str(result.exception))
+        api.authentication.get.side_effect = ProcessingError(SENTINEL)
+        with self.assertRaises(Transient) as result:
+            Exporter({}, api)
+        self.assertNotIn(SENTINEL, str(result.exception))
 
     @unittest.skipIf(os.name == "nt", "POSIX flock requires Linux; covered by Linux CI")
     def test_real_process_lock(self):

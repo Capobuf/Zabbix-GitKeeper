@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from .storage import Error, read_json
+from .storage import Error, Transient, read_json
 
 
 class Publisher:
@@ -31,10 +31,14 @@ class Publisher:
             result = subprocess.run(["git", "-c", "credential.helper=", "-c", "core.hooksPath=" + os.devnull,
                                      "-c", "commit.gpgsign=false", *args], cwd=cwd, env=self.env,
                                     text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=180)
-        except (OSError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired:
+            raise Transient("Git operation timed out; retry with bounded backoff.") from None
+        except OSError:
             raise Error("Git failed or timed out. Check connectivity and local repository health.") from None
         if result.returncode:
             # Git stderr can contain remote-controlled text; never surface it.
+            if args[0] in ("clone", "fetch", "push") and result.returncode == 128:
+                raise Transient("Git transport or authentication failed; retry with bounded backoff.")
             raise Error("Git rejected the operation. Check write access, branch protection and divergence.")
         return result.stdout.strip()
 

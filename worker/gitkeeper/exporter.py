@@ -5,7 +5,7 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from zabbix_utils import ProcessingError, ZabbixAPI
+from zabbix_utils import APIRequestError, ProcessingError, ZabbixAPI
 
 from . import __version__
 from .policy import encode, sanitize
@@ -18,16 +18,20 @@ class Incomplete(Error):
 
 class Exporter:
     def __init__(self, credentials: dict, api=None):
-        self.api = api or ZabbixAPI(url=api_url(credentials["url"]), timeout=30)
-        self.version = str(self.api.apiinfo.version())
-        self.series = ".".join(self.version.split(".")[:2])
-        if self.series not in ("7.0", "7.4"):
-            raise Error("Zabbix version has no reviewed export policy. Targets are 7.0 and 7.4.")
-        if api is None:
-            self.api.login(token=credentials["token"])
-        # authentication.get is Super-admin-only on both target APIs. Fail closed
-        # rather than treating a permission-filtered enumeration as whole-instance.
-        self.api.authentication.get(output=["authentication_type"])
+        try:
+            self.api = api or ZabbixAPI(url=api_url(credentials["url"]), timeout=30)
+            self.version = str(self.api.apiinfo.version())
+            self.series = ".".join(self.version.split(".")[:2])
+            if self.series not in ("7.0", "7.4"):
+                raise Error("Zabbix version has no reviewed export policy. Targets are 7.0 and 7.4.")
+            if api is None:
+                self.api.login(token=credentials["token"])
+            # Fail closed rather than treating permission-filtered enumeration as whole-instance.
+            self.api.authentication.get(output=["authentication_type"])
+        except ProcessingError:
+            raise Transient("Cannot reach Zabbix API; check connectivity and certificate trust.") from None
+        except APIRequestError:
+            raise Error("Zabbix rejected API authentication or the Super admin probe; verify the token and role.") from None
 
     def check_permissions(self, categories: list[str]) -> None:
         methods = {"hosts": ("host", "hostgroup", "item", "trigger", "discoveryrule", "itemprototype", "triggerprototype"),
