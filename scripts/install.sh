@@ -104,6 +104,10 @@ if [[ ! -x /opt/zabbix-gitkeeper/venv/bin/python ]]; then
     (umask 022; python3 -m venv /opt/zabbix-gitkeeper/venv)
 fi
 (umask 022; /opt/zabbix-gitkeeper/venv/bin/python -m pip install --disable-pip-version-check "$SOURCE/worker")
+# Package tools/default ACLs can grant write bits independently of our umask.
+# Enforce the boundary on installed regular files/directories, without following symlinks.
+find /opt/zabbix-gitkeeper/venv -type d -exec chmod 0755 {} +
+find /opt/zabbix-gitkeeper/venv -type f -exec chmod a+r,go-w {} +
 chmod 0755 /opt/zabbix-gitkeeper/venv/lib/python*/site-packages/gitkeeper/askpass.sh
 install -d -o root -g root -m 0755 "$MODULES/gitkeeper"
 while IFS= read -r -d '' file; do

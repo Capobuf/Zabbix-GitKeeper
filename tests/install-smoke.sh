@@ -22,7 +22,7 @@ bash "$SOURCE/scripts/install.sh" "${ARGS[@]}"
 [[ $(sha256sum /var/lib/zabbix-gitkeeper/private/settings.json) == "$before" ]]
 [[ $(sha256sum /etc/cron.d/zabbix-gitkeeper) == "$cron_before" ]]
 [[ $(grep -c '^\* \* \* \* \* ' /etc/cron.d/zabbix-gitkeeper) == 1 ]]
-stat -c '%a %U:%G %n' /var/lib/zabbix-gitkeeper/private /var/lib/zabbix-gitkeeper/public
+stat -c '%a %U:%G %n' /var/lib/zabbix-gitkeeper/private /var/lib/zabbix-gitkeeper/public /opt/zabbix-gitkeeper/venv/bin/gitkeeper
 [[ $(stat -c '%a' /var/lib/zabbix-gitkeeper/private) == 700 ]]
 [[ $(stat -c '%a' /var/lib/zabbix-gitkeeper/public) == 2750 ]]
 runuser -u www-data -- test ! -r /var/lib/zabbix-gitkeeper/private/settings.json
