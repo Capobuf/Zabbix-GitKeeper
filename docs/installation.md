@@ -14,6 +14,8 @@ There is no stable release or selected project license. Use a disposable instanc
 
 ## Register the GitHub App
 
+**Register one GitHub App for the project, not one per Zabbix installation.** Follow the [GitHub App setup guide](github-app.md). Official releases can eventually include the public Client ID; the current experimental installer still requires the real ID via `--client-id`. GitHub App is the only supported GitHub authentication method.
+
 In GitHub developer settings, create/configure a GitHub App and enable **Device Flow**.
 Enable user access-token expiration. Set repository **Metadata: read**, **Contents: read/write**.
 If personal-account repository creation is wanted, grant account **Repository creation: write**;
