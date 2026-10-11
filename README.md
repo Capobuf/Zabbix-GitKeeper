@@ -2,7 +2,7 @@
 
 **Version, audit, and recover your Zabbix configuration using GitHub.**
 
-> **Project status: specification / not implemented.** This README defines the intended product, technical boundaries, and acceptance criteria. Features described below must not be assumed to work until implemented and verified.
+> **Project status: experimental implementation; live integration not yet verified.** The first iteration implements the PHP module, local worker, GitHub App Device Flow, private repository selection/creation, scheduled secret-filtered snapshots and status reporting. The specification below also describes future features. No Zabbix/Linux installation profile is certified and no restore/disaster recovery is implemented. See [installation](docs/installation.md), [coverage](docs/coverage.md), [architecture](docs/architecture.md) and [validation](docs/validation.md) for the actual scope and evidence.
 
 Zabbix GitKeeper is a native Zabbix frontend module plus a lightweight local worker. After installation, an administrator connects a GitHub account, chooses or creates a **private** repository, selects the configuration categories to track, and saves. GitKeeper performs the first export automatically and continues on a configurable schedule. Errors, last run, and repository status are visible inside Zabbix.
 
@@ -55,7 +55,7 @@ The project maintainer must register and configure the GitHub App **once**, incl
 ### 3. Select or create the destination
 
 - List repositories **actually accessible** to the authorized GitHub App and current user. Show account, repository, privacy, access status, and the selected branch.
-- Offer **Create private repository** if a safe, explicitly authorized creation flow is implemented. The GitHub repository-creation API may require **Administration: write** permission and additional installation authorization; **do not request this broad permission solely for backup** without reviewing the trade-off.
+- Offer **Create private repository** using the GitHub App **Repository creation: write** account permission when granted. Do not request **Administration: write** solely to create backup repositories. Verify installation access to the newly created repository separately; otherwise guide the user to create it on GitHub and grant App access.
 - As a reliable first fallback, provide **Create on GitHub**, then refresh the repository list after GitHub App installation/access has been granted.
 - **Private** repositories are required for backup data. Reject a public target rather than silently publishing internal monitoring topology, user identities, and endpoint names.
 - Recommend a dedicated branch (for example `gitkeeper`); use an existing branch only after verifying write access and branch protection. Never force-push.

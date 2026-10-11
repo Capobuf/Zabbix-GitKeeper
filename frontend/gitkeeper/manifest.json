@@ -1,0 +1,15 @@
+{
+  "manifest_version": 2.0,
+  "id": "capobuf_gitkeeper",
+  "name": "Zabbix GitKeeper",
+  "namespace": "GitKeeper",
+  "version": "0.1.0",
+  "author": "Capobuf",
+  "description": "Private GitHub configuration tracking. Full recovery is not implemented.",
+  "actions": {
+    "gitkeeper.view": {"class": "View", "view": "gitkeeper.view"},
+    "gitkeeper.save": {"class": "Save"},
+    "gitkeeper.status": {"class": "Status", "layout": "layout.json"}
+  },
+  "assets": {"js": ["gitkeeper.js"]}
+}
