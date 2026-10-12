@@ -1,0 +1,31 @@
+name: Checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install worker and check tools
+        run: python -m pip install ./worker ruff build
+      - name: Python checks
+        run: |
+          python -m ruff check --config worker/pyproject.toml worker tests
+          python -m compileall -q worker
+          python -m unittest discover -s tests -v
+      - name: PHP and shell checks
+        run: |
+          find frontend tests -name '*.php' -print0 | xargs -0 -n1 php -l
+          php tests/frontend.php
+          bash -n scripts/install.sh scripts/uninstall.sh
+          shellcheck scripts/install.sh scripts/uninstall.sh tests/install-smoke.sh
+      - name: Frontend polling regression
+        run: node tests/frontend-poll.cjs
+      - name: Package
+        run: python -m build worker
+      - name: Installer smoke test (isolated fixture, not a live Zabbix server)
+        run: sudo env PATH="$PATH" GITHUB_ACTIONS=true bash tests/install-smoke.sh

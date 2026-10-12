@@ -2,7 +2,9 @@
 
 **Version, audit, and recover your Zabbix configuration using GitHub.**
 
-> **Project status: specification / not implemented.** This README defines the intended product, technical boundaries, and acceptance criteria. Features described below must not be assumed to work until implemented and verified.
+> **Project status: experimental implementation; partial live verification on Zabbix 7.4.15, full integration not yet verified.** The first iteration implements the PHP module, local worker, GitHub App Device Flow, private repository selection/creation, scheduled secret-filtered snapshots and status reporting. The specification below also describes future features. No Zabbix/Linux installation profile is certified and no restore/disaster recovery is implemented. See [installation](docs/installation.md), [coverage](docs/coverage.md), [architecture](docs/architecture.md) and [validation](docs/validation.md) for the actual scope and evidence.
+
+**GitHub App configuration:** [Setup guide for maintainers and Zabbix administrators](docs/github-app.md). A single shared GitHub App is registered once; individual installations use Device Flow. No alternative GitHub authentication method is planned.
 
 **GitHub App configuration:** [Setup guide for maintainers and Zabbix administrators](docs/github-app.md). A single shared GitHub App is registered once; individual installations use Device Flow. No alternative GitHub authentication method is planned.
 
@@ -52,12 +54,13 @@ From **Administration → GitKeeper** (preferred location; use the closest offic
 4. GitKeeper securely stores the resulting user access/refresh token material on the VM; the token is never displayed or committed.
 5. Credentials refresh automatically where applicable; revoked/expired access must result in a visible **Reconnect GitHub** state.
 
-The project maintainer must register and configure the GitHub App **once**, including device flow and narrowly scoped permissions. Use **Metadata: read** and **Contents: read/write** for repository access. GitHub App user tokens are constrained by **both** user and installation permissions. Do not distribute the app's signing private key. Implement token refresh according to GitHub's documented device-flow rules; do not assume every token is permanent.
+Each installation can use its own registered GitHub App. Save its **Client ID** in **Administration > GitKeeper > GitHub**, enable device flow and configure narrowly scoped permissions. Use **Metadata: read** and **Contents: read/write** for repository access. GitHub App user tokens are constrained by **both** user and installation permissions. Do not distribute the app's signing private key. Implement token refresh according to GitHub's documented device-flow rules; do not assume every token is permanent.
 
 ### 3. Select or create the destination
 
 - List repositories **actually accessible** to the authorized GitHub App and current user. Show account, repository, privacy, access status, and the selected branch.
-- Offer **Create private repository** if a safe, explicitly authorized creation flow is implemented. The GitHub repository-creation API may require **Administration: write** permission and additional installation authorization; **do not request this broad permission solely for backup** without reviewing the trade-off.
+- In the GitHub tab, show the repository table and selector beside the dedicated private-repository creation form. **Use repository** saves the destination before API setup; changing it pauses synchronization until **Save & Sync**. Creation supports a personal account or organization and selects the new repository only after access verification.
+- Offer **Create private repository** using the GitHub App **Repository creation: write** permission when granted. Do not request **Administration: write** solely to create backup repositories. Verify installation access to the newly created repository separately; otherwise guide the user to create it on GitHub and grant App access.
 - As a reliable first fallback, provide **Create on GitHub**, then refresh the repository list after GitHub App installation/access has been granted.
 - **Private** repositories are required for backup data. Reject a public target rather than silently publishing internal monitoring topology, user identities, and endpoint names.
 - Recommend a dedicated branch (for example `gitkeeper`); use an existing branch only after verifying write access and branch protection. Never force-push.
