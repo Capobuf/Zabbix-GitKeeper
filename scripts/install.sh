@@ -140,5 +140,5 @@ mv -f /etc/cron.d/.zabbix-gitkeeper.tmp /etc/cron.d/zabbix-gitkeeper
 printf '%s\n' 'Installed. Restart PHP-FPM/Apache to pick up group membership.' \
     'In Administration > General > Modules: Scan directory, then enable Zabbix GitKeeper.' \
     'Open Administration > GitKeeper > GitHub and save your GitHub App Client ID if not supplied during installation.' \
-    'Configure HTTPS API access, connect/install the GitHub App, select a private repository and Save & Sync.' \
+    'Configure Zabbix API access, connect/install the GitHub App, select a private repository and Save & Sync.' \
     'Compatibility targets: 7.0 and 7.4; no live Zabbix integration is certified yet.'

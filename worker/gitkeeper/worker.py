@@ -37,6 +37,7 @@ class Worker:
         self.status["zabbix_configured"] = (self.private / "zabbix.json").exists()
         # Publish the verified endpoint for UI prefilling, never the credentials.
         self.status["zabbix_url"] = read_json(self.private / "zabbix.json").get("url")
+        self.status["zabbix_verify_tls"] = read_json(self.private / "zabbix.json").get("verify_tls", True)
         atomic_json(self.public, self.status, 0o640)
 
     def failure(self, exc: Exception) -> None:
@@ -122,6 +123,8 @@ class Worker:
             self.select_repository(self.github.repository(params["repository_id"]))
         elif op == "set_zabbix":
             credentials = {"url": params["url"], "token": params["token"]}
+            if "verify_tls" in params:
+                credentials["verify_tls"] = params["verify_tls"]
             exporter = Exporter(credentials)
             # Verify the API role here; selected collectors are validated on Save & Sync.
             exporter.check_permissions(self.config.get("categories", list(CATEGORIES)))

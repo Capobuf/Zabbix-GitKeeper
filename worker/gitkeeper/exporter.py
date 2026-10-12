@@ -19,7 +19,8 @@ class Incomplete(Error):
 class Exporter:
     def __init__(self, credentials: dict, api=None):
         try:
-            self.api = api or ZabbixAPI(url=api_url(credentials["url"]), timeout=30)
+            self.api = api or ZabbixAPI(url=api_url(credentials["url"]), timeout=30,
+                                       validate_certs=credentials.get("verify_tls", True))
             self.version = str(self.api.apiinfo.version())
             self.series = ".".join(self.version.split(".")[:2])
             if self.series not in ("7.0", "7.4"):
@@ -37,11 +38,16 @@ class Exporter:
         methods = {"hosts": ("host", "hostgroup", "item", "trigger", "discoveryrule", "itemprototype", "triggerprototype"),
                    "templates": ("template", "templategroup", "item", "trigger", "discoveryrule", "itemprototype", "triggerprototype"),
                    "actions": ("action",), "media_types": ("mediatype",), "users": ("user", "usergroup", "role")}
-        for category in categories:
-            for method in methods[category]:
-                getattr(self.api, method).get(countOutput=True)
-            if self.series == "7.4" and category in ("hosts", "templates"):
-                self.api.discoveryruleprototype.get(countOutput=True)
+        try:
+            for category in categories:
+                for method in methods[category]:
+                    getattr(self.api, method).get(countOutput=True)
+                if self.series == "7.4" and category in ("hosts", "templates"):
+                    self.api.discoveryruleprototype.get(countOutput=True)
+        except APIRequestError:
+            raise Error("Zabbix denied a required read method. Check the token owner's API role permissions.") from None
+        except ProcessingError:
+            raise Transient("Cannot reach Zabbix API; check connectivity and certificate trust.") from None
 
     def enumerate(self, method: str, id_field: str, **params) -> list:
         get = getattr(self.api, method).get

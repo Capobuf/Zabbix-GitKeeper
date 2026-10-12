@@ -19,6 +19,22 @@ document.addEventListener('DOMContentLoaded', () => {
         apiSource.textContent = apiSource.dataset.customLabel;
         updateApiWarning();
     }));
+    const tlsChecks = ['gitkeeper-bootstrap-tls', 'gitkeeper-existing-tls'].map(id => document.getElementById(id));
+    tlsChecks.forEach(input => input.addEventListener('change', () => {
+        tlsChecks.forEach(other => { if (other !== input) other.checked = input.checked; });
+    }));
+    document.getElementById('gitkeeper-use-loopback').addEventListener('click', () => {
+        try {
+            const local = new URL(apiUrls[0].value);
+            local.hostname = '127.0.0.1';
+            apiUrls.forEach(input => { input.value = local.href; });
+            apiSource.textContent = apiSource.dataset.customLabel;
+            dirty = true;
+            updateApiWarning();
+        } catch (_) {
+            apiUrls[0].reportValidity();
+        }
+    });
     const copy = document.getElementById('gitkeeper-copy-install');
     if (copy) {
         copy.addEventListener('click', async () => {
@@ -50,6 +66,9 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             if (!response.ok) throw new Error('Status unavailable');
             const state = await response.json();
+            const apiConfigured = document.getElementById('gitkeeper-api-configured');
+            if (apiConfigured) apiConfigured.textContent = state.zabbix_configured
+                ? apiConfigured.dataset.configured : apiConfigured.dataset.unconfigured;
             const fingerprint = JSON.stringify([state.last_request ?? null, state.state ?? null, state.device ?? null,
                 state.last_commit ?? null, state.categories ?? null, state.account ?? null]);
             if (previous !== undefined && previous !== fingerprint
@@ -60,7 +79,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Keep the rendered fingerprint until reload. A change observed while an
             // input has focus must still trigger refresh once focus leaves the form.
             for (const key of ['state', 'github', 'account', 'error']) {
-                for (const prefix of ['gitkeeper-', 'gitkeeper-connection-']) {
+                for (const prefix of ['gitkeeper-', 'gitkeeper-connection-', 'gitkeeper-api-']) {
                     const element = document.getElementById(prefix + key);
                     if (element) element.textContent = key === 'github' && prefix === 'gitkeeper-connection-'
                         ? (state.github === 'Ready' ? element.dataset.connected
@@ -69,7 +88,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
         } catch (_) {
-            for (const id of ['gitkeeper-error', 'gitkeeper-connection-error']) {
+            for (const id of ['gitkeeper-error', 'gitkeeper-connection-error', 'gitkeeper-api-error']) {
                 const element = document.getElementById(id);
                 if (element) element.textContent = 'Status unavailable. Reload the page and check your session.';
             }

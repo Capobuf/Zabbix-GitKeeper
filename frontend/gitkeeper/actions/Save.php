@@ -17,7 +17,8 @@ class Save extends CController {
     protected function checkInput(): bool {
         $valid = $this->validateInput(['operation' => 'required|string', 'repository_id' => 'int32',
             'interval' => 'int32', 'categories' => 'array', 'api_url' => 'string', 'api_token' => 'string',
-            'repository_name' => 'string', 'repository_owner' => 'string', 'client_id' => 'string', 'consent' => 'in 1']);
+            'repository_name' => 'string', 'repository_owner' => 'string', 'client_id' => 'string',
+            'consent' => 'in 1', 'tls_skip_verify' => 'in 1']);
         if (!$valid) {
             $this->setResponse(new CControllerResponseFatal());
         }
@@ -31,6 +32,7 @@ class Save extends CController {
     protected function doAction(): void {
         $redirect = new CControllerResponseRedirect((new CUrl('zabbix.php'))->setArgument('action', 'gitkeeper.view'));
         $created = null;
+        $token_error = null;
         try {
             $op = $this->getInput('operation');
             $messages = [
@@ -54,19 +56,23 @@ class Save extends CController {
                     'interval' => (int) $this->getInput('interval', 15), 'categories' => $this->getInput('categories', [])]];
             }
             elseif ($op === 'set_zabbix' || $op === 'create_zabbix_token') {
-                $url = $this->getInput('api_url', '');
+                $token_error = _('Enter an HTTP or HTTPS API URL ending in /api_jsonrpc.php, without credentials, query parameters or a fragment. No token was created or submitted.');
+                $url = trim($this->getInput('api_url', ''));
                 Queue::apiUrl($url);
                 if ($op === 'create_zabbix_token') {
+                    $token_error = _('Check the consent box to create a token inheriting your account permissions. No token was created.');
                     if ($this->getInput('consent', 0) != 1) {
                         throw new \RuntimeException('Explicit consent is required to create a token inheriting your account permissions.');
                     }
                     // Same native API used by Zabbix token administration; never return the token to the browser.
+                    $token_error = _('Zabbix could not create the token. Check your role permission to manage API tokens, or use an existing Super admin token.');
                     $result = API::Token()->create(['name' => 'GitKeeper '.bin2hex(random_bytes(4)),
                         'userid' => CWebUser::$data['userid'], 'expires_at' => 0, 'status' => ZBX_AUTH_TOKEN_ENABLED]);
                     if (!$result) {
                         throw new \RuntimeException('Native token creation failed. Use an existing API token.');
                     }
                     $created = $result['tokenids'][0];
+                    $token_error = _('Zabbix could not generate the token. Check your role permission to manage API tokens.');
                     $generated = API::Token()->generate([$created]);
                     if (!$generated) {
                         throw new \RuntimeException('Native token generation failed.');
@@ -74,10 +80,14 @@ class Save extends CController {
                     $token = $generated[0]['token'];
                 }
                 else {
-                    $token = $this->getInput('api_token', '');
+                    $token = trim($this->getInput('api_token', ''));
                 }
                 $op = 'set_zabbix';
-                $params = ['url' => $url, 'token' => $token];
+                $params = ['url' => $url, 'token' => $token,
+                    'verify_tls' => $this->getInput('tls_skip_verify', 0) != 1];
+                $token_error = _('Enter the complete 64-character API token. Verification was not submitted.');
+                Queue::validate($op, $params);
+                $token_error = _('Token verification could not be queued. Check worker installation, queue permissions and pending requests.');
             }
             elseif ($op === 'set_github_app') {
                 $params = ['client_id' => trim($this->getInput('client_id', ''))];
@@ -94,7 +104,14 @@ class Save extends CController {
         }
         catch (\Throwable $e) {
             if ($created !== null) {
-                API::Token()->delete([$created]);
+                try {
+                    if (!API::Token()->delete([$created])) {
+                        throw new \RuntimeException('Token cleanup failed.');
+                    }
+                }
+                catch (\Throwable $cleanup_error) {
+                    $token_error = _('Token setup failed and the newly created token could not be removed. Revoke the unused GitKeeper token in Manage / revoke API tokens before retrying.');
+                }
             }
             // Never reflect API responses, request bodies or token-bearing errors.
             $errors = [
@@ -102,10 +119,10 @@ class Save extends CController {
                 'create_repository' => _('Repository creation was not submitted. Check the owner, repository name and worker queue permissions.'),
                 'select_repository' => _('Repository selection was not submitted. Select a repository and check the worker queue permissions.'),
                 'save' => _('Settings were not submitted. Select a repository, at least one category and an interval; check the worker queue permissions.'),
-                'set_zabbix' => _('Token verification was not submitted. Check the HTTPS API URL, token format and worker queue permissions.'),
-                'create_zabbix_token' => _('Token setup was not submitted. Check the HTTPS API URL, consent and worker queue permissions.')
+                'set_zabbix' => _('Token verification was not submitted. Check the API URL, token format and worker queue permissions.'),
+                'create_zabbix_token' => _('Token setup was not submitted. Check the API URL, consent and worker queue permissions.')
             ];
-            CMessageHelper::setErrorTitle($errors[$this->getInput('operation')] ??
+            CMessageHelper::setErrorTitle($token_error ?? $errors[$this->getInput('operation')] ??
                 _('Request was not submitted. Check that the worker is installed and its queue is writable.'));
         }
         $this->setResponse($redirect);

@@ -39,7 +39,7 @@ Official references: [Device Flow](https://docs.github.com/en/apps/creating-gith
 
 When the frontend module is already enabled and the worker is unavailable, **GitKeeper > Overview**
 shows a read-only installation command with a **Copy** button. It uses the actual frontend path and
-PHP process user, downloads the experimental foundation branch into a fresh temporary directory,
+PHP process user, downloads main into a fresh temporary directory,
 and invokes the existing installer. Paste it into a Bash terminal on the Zabbix server; the command
 stops on the first error. Configure the Client ID in the GitHub tab afterward. Install the prerequisites
 listed above first, and restart the actual PHP service afterward. If PHP cannot detect its process
@@ -49,7 +49,7 @@ The command downloads the published branch; unpushed local edits are not include
 Clone the source on the test Zabbix VM, then run from its root:
 
 ```sh
-git switch feat/gitkeeper-foundation
+git switch main
 sudo bash scripts/install.sh \
   --frontend-root /absolute/path/to/the/real/zabbix/frontend \
   --web-user ACTUAL_PHP_PROCESS_USER
@@ -93,10 +93,18 @@ authorization and pending device code, clears the repository selection and stops
 and choose an accessible private repository. Saving the same ID keeps the connection and schedule.
 
 1. In **Zabbix API**, review the prefilled `.../api_jsonrpc.php` URL. GitKeeper uses the worker's
-   verified endpoint first, then the native Zabbix frontend URL setting, then the current page address.
-   Subdirectories and ports are preserved. An HTTP address stays HTTP and displays an HTTPS prerequisite;
-   GitKeeper does not guess a working HTTPS endpoint. The URL remains editable, and both token forms
-   share the same value. Only the verified endpoint is published in status; the token remains private.
+   verified endpoint first. Otherwise, it derives a loopback endpoint from the PHP server port and
+   frontend path and probes `apiinfo.version` without credentials (two-second timeout, no redirects).
+   A matching frontend version selects loopback automatically. If the probe fails, it uses the native
+   Zabbix frontend URL setting, then the current page address. No server-specific address is hardcoded.
+   Subdirectories and ports are preserved. HTTP and HTTPS are supported. HTTPS certificates are verified
+   by default; check **Allow an invalid or self-signed certificate (skip verification)** only for an
+   endpoint that needs this exception. This setting applies to Zabbix API access, not GitHub.
+   HTTP sends tokens without encryption. **Use 127.0.0.1** keeps the same scheme, port and path and
+   requests loopback access from the worker on the Zabbix server. The worker verifies it before saving;
+   a frontend bound to a specific interface or a name-based virtual host may require its original address.
+   The URL remains editable, and both token forms share the URL and certificate setting. Only the
+   verified endpoint and certificate setting are published in status; the token remains private.
    Supply an existing token, or explicitly check the permission-inheritance consent and select
    **Create and verify token**. Native creation uses the current administrator's session
    to call `token.create`/`token.generate`; cron never uses that browser session.
@@ -104,7 +112,8 @@ and choose an accessible private repository. Saving the same ID keeps the connec
    **API tokens** page. This first iteration requires a Super admin token: a Super-admin-only
    `authentication.get` probe prevents a restricted account's partial visibility being treated as complete.
    The role must allow API calls for each selected collector and `configuration.export`.
-2. Wait for the next cron tick and check that verification succeeds. Tokens never reappear in the UI.
+2. Wait for the next cron tick, normally within one minute, and check **Zabbix API > Worker status /
+   Last error**. Successful verification shows **Configured**. Tokens never reappear in the UI.
 3. Select **Connect GitHub**, wait for the device code, open **Authorize on GitHub** and authorize your account.
    Return to GitKeeper; the page checks the result automatically. App installation and repository access
    are a separate step on GitHub. The worker runs once per minute, even if the browser is closed.

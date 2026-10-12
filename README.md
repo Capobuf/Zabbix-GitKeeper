@@ -6,8 +6,6 @@
 
 **GitHub App configuration:** [Setup guide for maintainers and Zabbix administrators](docs/github-app.md). A single shared GitHub App is registered once; individual installations use Device Flow. No alternative GitHub authentication method is planned.
 
-**GitHub App configuration:** [Setup guide for maintainers and Zabbix administrators](docs/github-app.md). A single shared GitHub App is registered once; individual installations use Device Flow. No alternative GitHub authentication method is planned.
-
 Zabbix GitKeeper is a native Zabbix frontend module plus a lightweight local worker. After installation, an administrator connects a GitHub account, chooses or creates a **private** repository, selects the configuration categories to track, and saves. GitKeeper performs the first export automatically and continues on a configurable schedule. Errors, last run, and repository status are visible inside Zabbix.
 
 The product has **two complementary capabilities**, which must not be confused:
@@ -227,7 +225,7 @@ This is **a configuration continuity and disaster-recovery tool, not a substitut
 - Keep the GitHub recovery destination **private**, and encrypt full recovery archives regardless of repository visibility.
 - Never commit sensitive raw API export values without an explicit audited field-level sanitization policy.
 - Avoid passing credentials as command-line arguments; do not expose secrets in process listings, logs or temporary files.
-- Enforce HTTPS certificate verification, safe path handling, CSRF/authz checks and non-overlapping jobs.
+- Verify HTTPS certificates by default; allow an explicit per-endpoint exception for internal Zabbix certificates and HTTP access, including loopback. Preserve safe path handling, CSRF/authz checks and non-overlapping jobs.
 - Failed push/auth/export/upload must be visible and must not invalidate an earlier good recovery point.
 - Installation and updates may use elevated privileges, but the recurring worker must use a separate minimally privileged system identity.
 

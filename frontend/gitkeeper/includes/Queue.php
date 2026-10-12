@@ -16,11 +16,11 @@ final class Queue {
 
     public static function apiUrl(string $url): void {
         $parts = parse_url($url);
-        if (strlen($url) > 2048 || !$parts || ($parts['scheme'] ?? '') !== 'https'
+        if (strlen($url) > 2048 || !$parts || !in_array($parts['scheme'] ?? '', ['http', 'https'], true)
                 || empty($parts['host']) || isset($parts['user']) || isset($parts['pass'])
                 || isset($parts['query']) || isset($parts['fragment'])
                 || !str_ends_with($parts['path'] ?? '', '/api_jsonrpc.php')) {
-            throw new RuntimeException('Use an HTTPS URL ending in /api_jsonrpc.php without credentials.');
+            throw new RuntimeException('Use an HTTP or HTTPS URL ending in /api_jsonrpc.php without credentials.');
         }
     }
 
@@ -32,6 +32,12 @@ final class Queue {
         $keys = array_keys($params);
         if ($operation === 'create_repository' && array_key_exists('owner', $params)) {
             $keys = array_diff($keys, ['owner']);
+        }
+        if ($operation === 'set_zabbix' && array_key_exists('verify_tls', $params)) {
+            $keys = array_diff($keys, ['verify_tls']);
+            if (!is_bool($params['verify_tls'])) {
+                throw new RuntimeException('Invalid TLS verification setting.');
+            }
         }
         sort($keys);
         if (!isset($allowed[$operation])) {

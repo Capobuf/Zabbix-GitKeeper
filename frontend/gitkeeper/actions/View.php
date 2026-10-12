@@ -34,6 +34,10 @@ class View extends CController {
         $api_url = Installation::apiUrl($status['zabbix_url'] ?? '');
         $api_url_source = $api_url !== '' ? _('Verified worker URL') : '';
         if ($api_url === '') {
+            $api_url = Installation::localApiUrl($_SERVER, ZABBIX_VERSION);
+            $api_url_source = $api_url !== '' ? _('Local Zabbix API detected on this server') : '';
+        }
+        if ($api_url === '') {
             $api_url = Installation::apiUrl(CSettingsHelper::get(CSettingsHelper::URL));
             $api_url_source = $api_url !== '' ? _('Zabbix frontend URL setting') : '';
         }

@@ -62,9 +62,9 @@ def api_url(value: str) -> str:
     if not isinstance(value, str) or len(value) > 2048:
         raise Error("Invalid Zabbix API URL.")
     url = urlsplit(value)
-    if (url.scheme != "https" or not url.hostname or url.username or url.password
+    if (url.scheme not in ("http", "https") or not url.hostname or url.username or url.password
             or url.query or url.fragment or not url.path.endswith("/api_jsonrpc.php")):
-        raise Error("Use an HTTPS Zabbix URL ending in /api_jsonrpc.php, without credentials.")
+        raise Error("Use an HTTP or HTTPS Zabbix URL ending in /api_jsonrpc.php, without credentials.")
     return value
 
 
@@ -94,13 +94,16 @@ def command(value: dict) -> dict:
     if not isinstance(value["id"], str) or not re.fullmatch(r"[a-f0-9]{32}", value["id"]):
         raise Error("Invalid request ID.")
     op, params = value["operation"], value["params"]
+    optional = {"create_repository": {"owner"}, "set_zabbix": {"verify_tls"}}
     if (not isinstance(op, str) or op not in operations or not isinstance(params, dict)
-            or (set(params) - ({"owner"} if op == "create_repository" else set())) != operations[op]):
+            or (set(params) - optional.get(op, set())) != operations[op]):
         raise Error("Unsupported operation or parameters.")
     if op == "save":
         params["settings"] = settings(params["settings"])
     elif op == "set_zabbix":
         api_url(params["url"])
+        if "verify_tls" in params and type(params["verify_tls"]) is not bool:
+            raise Error("Invalid TLS verification setting.")
         if not isinstance(params["token"], str) or not re.fullmatch(r"[a-fA-F0-9]{64}", params["token"]):
             raise Error("Invalid Zabbix API token format.")
     elif op == "set_github_app":

@@ -147,6 +147,31 @@ change is performed by this command.
   created. The Zabbix API remains unconfigured and the installation's endpoint is still HTTP;
   end-to-end export/publishing remains unverified.
 
+## API transport and token setup, 2026-10-12
+
+- Merged `feat/gitkeeper-foundation` into `main` without conflicts, after updating local `main` to
+  the fetched remote head. Removed the duplicated README App link introduced by the merge and changed
+  the installer command/documentation to use `main`.
+- Reproduced **Create and verify token** in the open live frontend with its existing HTTP URL and
+  unchecked consent: the POST redirects to the generic token-setup rejection. No token was created.
+  The former HTTPS-only validation rejected the address before native token creation.
+- Implemented HTTP and HTTPS Zabbix endpoints, with HTTPS certificate verification enabled by default
+  and a persisted, explicit per-endpoint option to skip it through the official client's `validate_certs`.
+  Existing saved credentials and queue requests default to verification. GitHub transport is unchanged.
+- Prefilling now probes a derived loopback endpoint without credentials before falling back to the
+  configured frontend/current-page URL. Port/path/scheme come from PHP server variables; the probe has
+  a two-second timeout, does not follow redirects and requires a matching API version. This is generic
+  detection, not evidence that loopback works on the supplied server. An already verified URL wins.
+- Added browser field validation, specific safe rejection messages, generation/queue cleanup checks,
+  live API-tab state/errors and certificate/URL sharing between token forms. Permission-check failures
+  preserve the old verified token and expose a safe role-permission message without raw API responses.
+- Passed Ruff, 40 Python cases (39 passed, one POSIX skip on Windows), PHP contracts and all PHP lint,
+  Node polling/loopback regressions, and diff whitespace checks. A real official-client HTTP request
+  against an isolated loopback JSON-RPC fixture verified token authentication and worker persistence.
+  PHP fixtures cover native token creation/generation/queue handoff, cleanup failures and local probe
+  success/fallback. These changes have not been deployed to the supplied server; its loopback endpoint,
+  real token creation/verification and full export/publishing remain unverified.
+
 ## Earlier automated checks
 
 Executed successfully on 2026-10-11:

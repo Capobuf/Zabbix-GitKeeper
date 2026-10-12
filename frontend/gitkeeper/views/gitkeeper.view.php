@@ -95,7 +95,7 @@ if (!$worker_ready) {
             && is_file($frontend_root.'/include/defines.inc.php') && $web_user && $web_user['name'] !== 'root') {
         $command = Installation::command($frontend_root, $web_user['name']);
         $command_id = 'gitkeeper-install-command';
-        $installation->addItem($note(_('Copy this command into a Bash terminal on the Zabbix server. The frontend path and PHP process user are detected automatically. The command downloads the experimental foundation branch and installs the module, worker and cron. After installation, configure your App Client ID in the GitHub tab.')));
+        $installation->addItem($note(_('Copy this command into a Bash terminal on the Zabbix server. The frontend path and PHP process user are detected automatically. The command downloads main and installs the module, worker and cron. After installation, configure your App Client ID in the GitHub tab.')));
         $row($installation, _('Installation command'),
             (new CTextArea($command_id, $command, ['rows' => 9, 'readonly' => true]))
                 ->disableSpellcheck()->setAdaptiveWidth(900), $command_id);
@@ -246,21 +246,44 @@ $github_body = [
 
 $bootstrap = new CFormGrid();
 $bootstrap_url_id = 'gitkeeper-bootstrap-url';
-$row($bootstrap, _('HTTPS API URL'), (new CTextBox('api_url', $api_url))->setId($bootstrap_url_id)
-    ->setWidth(ZBX_TEXTAREA_STANDARD_WIDTH)->setAttribute('placeholder', 'https://zabbix.example/zabbix/api_jsonrpc.php'),
+$row($bootstrap, _('API URL'), (new CTextBox('api_url', $api_url))->setId($bootstrap_url_id)
+    ->setWidth(ZBX_TEXTAREA_STANDARD_WIDTH)->setAttribute('required', true)
+    ->setAttribute('pattern', 'https?://[^\\s]+/api_jsonrpc\\.php')
+    ->setAttribute('title', _('Use an HTTP or HTTPS URL ending in /api_jsonrpc.php.'))
+    ->setAttribute('placeholder', 'https://zabbix.example/zabbix/api_jsonrpc.php'),
     $bootstrap_url_id);
+$row($bootstrap, _('HTTPS certificate'), (new CCheckBox('tls_skip_verify', 1))
+    ->setId('gitkeeper-bootstrap-tls')->setChecked(($status['zabbix_verify_tls'] ?? true) === false)
+    ->setLabel(_('Allow an invalid or self-signed certificate (skip verification).')), 'gitkeeper-bootstrap-tls');
 $row($bootstrap, _('Consent'), (new CCheckBox('consent', 1))
-    ->setLabel(_('Create a non-expiring token that inherits my current account permissions.')), 'consent');
+    ->setLabel(_('Create a non-expiring token that inherits my current account permissions.'))
+    ->setAttribute('required', true), 'consent');
 $bootstrap->addItem($note(_('A Super admin API token is required. The worker uses it independently of your browser session.')));
 $api = new CFormGrid();
 $existing_url_id = 'gitkeeper-existing-url';
-$row($api, _('HTTPS API URL'), (new CTextBox('api_url', $api_url))->setId($existing_url_id)
-    ->setWidth(ZBX_TEXTAREA_STANDARD_WIDTH)->setAttribute('placeholder', 'https://zabbix.example/zabbix/api_jsonrpc.php'),
+$row($api, _('API URL'), (new CTextBox('api_url', $api_url))->setId($existing_url_id)
+    ->setWidth(ZBX_TEXTAREA_STANDARD_WIDTH)->setAttribute('required', true)
+    ->setAttribute('pattern', 'https?://[^\\s]+/api_jsonrpc\\.php')
+    ->setAttribute('title', _('Use an HTTP or HTTPS URL ending in /api_jsonrpc.php.'))
+    ->setAttribute('placeholder', 'https://zabbix.example/zabbix/api_jsonrpc.php'),
     $existing_url_id);
+$row($api, _('HTTPS certificate'), (new CCheckBox('tls_skip_verify', 1))
+    ->setId('gitkeeper-existing-tls')->setChecked(($status['zabbix_verify_tls'] ?? true) === false)
+    ->setLabel(_('Allow an invalid or self-signed certificate (skip verification).')), 'gitkeeper-existing-tls');
 $row($api, _('Existing API token'), (new CTextBox('api_token'))->setAttribute('type', 'password')
-    ->setAttribute('autocomplete', 'new-password')->setWidth(ZBX_TEXTAREA_STANDARD_WIDTH), 'api_token');
+    ->setAttribute('autocomplete', 'new-password')->setAttribute('required', true)
+    ->setAttribute('pattern', '[a-fA-F0-9]{64}')
+    ->setAttribute('title', _('Enter the complete 64-character API token.'))
+    ->setWidth(ZBX_TEXTAREA_STANDARD_WIDTH), 'api_token');
 $api_body = [
-    $row(new CFormGrid(), _('Zabbix API'), $api_ready ? _('Configured') : _('Not configured'))
+    $row(new CFormGrid(), _('Zabbix API'), (new CSpan($api_ready ? _('Configured') : _('Not configured')))
+        ->setId('gitkeeper-api-configured')->setAttribute('data-configured', _('Configured'))
+        ->setAttribute('data-unconfigured', _('Not configured')))
+        ->addItem([new CLabel(_('Worker status')), new CFormField(
+            (new CSpan($status['state'] ?? '-'))->setId('gitkeeper-api-state')->setAttribute('role', 'status'))])
+        ->addItem([new CLabel(_('Last error')), new CFormField(
+            (new CSpan($status['error'] ?? '-'))->setId('gitkeeper-api-error')->setAttribute('role', 'status'))])
+        ->addItem($note(_('After submission, verification starts on the next worker tick, normally within one minute. Wait for Configured or check Last error here.')))
         ->addItem($note($api_ready
             ? _('The API token is configured. To replace it, create or verify another token below.')
             : _('Create a token below, or use an existing Super admin token. Configuration exports become available after verification succeeds.')))
@@ -270,8 +293,12 @@ $api_body = [
             ->setAttribute('data-custom-label', _('Custom API address'))))
             ->addClass(CFormField::ZBX_STYLE_FORM_FIELD_OFFSET_1))
         ->addItem((new CFormField((new CSpan())->setId('gitkeeper-api-url-warning')->setAttribute('role', 'status')
-            ->setAttribute('data-http-warning', _('The detected address uses HTTP. Configure a working HTTPS endpoint before creating or submitting a token.'))))
+            ->setAttribute('data-http-warning', _('HTTP sends the API token without encryption. For a local frontend, you can use 127.0.0.1 to keep worker traffic on this server.'))))
             ->addClass(CFormField::ZBX_STYLE_FORM_FIELD_OFFSET_1)),
+    (new CFormGrid())->addItem((new CFormField([
+        (new CButton('gitkeeper-use-loopback', _('Use 127.0.0.1')))->addClass(ZBX_STYLE_BTN_ALT),
+        ' ', _('Uses the current scheme, port and path. The worker verifies this address before saving; name-based virtual hosts may require the original hostname.')
+    ]))->addClass(CFormField::ZBX_STYLE_FORM_FIELD_OFFSET_1)),
     (new CTag('h4', true, _('Create a Zabbix API token')))->addClass('input-section-header'),
     $form('bootstrap')->addItem($bootstrap)->addItem(makeFormFooter(
         $submit('create_zabbix_token', _('Create and verify token'), $worker_ready))),

@@ -1,6 +1,6 @@
 # GitHub App setup for Zabbix GitKeeper
 
-> **Current status:** GitKeeper is experimental. The GitHub App integration exists on the `feat/gitkeeper-foundation` branch, but has **not** been validated end-to-end against a live Zabbix installation. This is a configuration guide, not a release certification.
+> **Current status:** GitKeeper is experimental. The GitHub App integration exists on `main`, but has **not** been validated end-to-end against a live Zabbix installation. This is a configuration guide, not a release certification.
 
 ## Recommended approach: one App, any number of GitKeeper installations
 

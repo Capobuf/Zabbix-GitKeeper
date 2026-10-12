@@ -3,7 +3,9 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -15,7 +17,7 @@ from gitkeeper.exporter import Exporter, Incomplete
 from gitkeeper.git import Publisher
 from gitkeeper.github import GitHub, Reconnect, request as github_request
 from gitkeeper.policy import OMITTED, UNREADABLE, encode, sanitize
-from gitkeeper.storage import Error, Transient, atomic_json, command, process_lock, read_json, settings
+from gitkeeper.storage import Error, Transient, api_url, atomic_json, command, process_lock, read_json, settings
 from gitkeeper.worker import Worker
 
 SENTINEL = "TEST_SECRET_NEVER_PUBLISH"
@@ -460,6 +462,68 @@ class WorkerTests(unittest.TestCase):
         atomic_json(self.install, {"state_dir": str(self.root), "client_id": "fixture"})
         self.worker = Worker(self.install)
 
+    def test_native_client_verifies_http_loopback_before_storing_token(self):
+        calls = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                calls.append((request["method"], self.headers.get("Authorization")))
+                result = "7.4.15" if request["method"] == "apiinfo.version" else (
+                    {"authentication_type": "0"} if request["method"] == "authentication.get" else "0")
+                data = json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            endpoint = f"http://127.0.0.1:{server.server_port}/zabbix/api_jsonrpc.php"
+            self.worker.execute(command({"id": "a" * 32, "operation": "set_zabbix", "params": {
+                "url": endpoint, "token": TOKEN}}))
+            self.assertTrue(read_json(self.worker.public)["zabbix_configured"])
+            self.assertEqual(read_json(self.root / "private/zabbix.json")["url"], endpoint)
+            self.assertIn(("authentication.get", "Bearer " + TOKEN), calls)
+            self.assertNotIn(TOKEN, self.worker.public.read_text())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    @patch("gitkeeper.exporter.ZabbixAPI")
+    def test_http_loopback_and_optional_https_certificate_verification(self, client):
+        client.return_value.apiinfo.version.return_value = "7.4.15"
+        for endpoint, verify in [("http://127.0.0.1/zabbix/api_jsonrpc.php", True),
+                                 ("https://127.0.0.1/zabbix/api_jsonrpc.php", False),
+                                 ("https://zabbix.example/api_jsonrpc.php", True)]:
+            params = {"url": endpoint, "token": TOKEN, "verify_tls": verify}
+            self.worker.execute(command({"id": "a" * 32, "operation": "set_zabbix", "params": params}))
+            client.assert_called_with(url=endpoint, timeout=30, validate_certs=verify)
+            client.return_value.login.assert_called_with(token=TOKEN)
+            self.assertEqual(read_json(self.root / "private/zabbix.json"), params)
+            self.assertEqual(read_json(self.worker.public)["zabbix_verify_tls"], verify)
+            self.assertNotIn(TOKEN, self.worker.public.read_text())
+        Exporter({"url": "https://example/api_jsonrpc.php", "token": TOKEN})
+        client.assert_called_with(url="https://example/api_jsonrpc.php", timeout=30, validate_certs=True)
+
+    def test_api_endpoint_and_tls_option_validation(self):
+        for endpoint in ("http://127.0.0.1/zabbix/api_jsonrpc.php", "https://localhost:8443/api_jsonrpc.php"):
+            self.assertEqual(api_url(endpoint), endpoint)
+        for endpoint in ("ftp://localhost/api_jsonrpc.php", "http://user:pass@localhost/api_jsonrpc.php",
+                         "http://localhost/api_jsonrpc.php?token=secret", "https://localhost/api_jsonrpc.php#secret"):
+            with self.assertRaises(Error):
+                api_url(endpoint)
+        for verify in ("false", 0, None):
+            with self.assertRaisesRegex(Error, "TLS verification"):
+                command({"id": "a" * 32, "operation": "set_zabbix", "params": {
+                    "url": "https://localhost/api_jsonrpc.php", "token": TOKEN, "verify_tls": verify}})
+
     @patch("gitkeeper.worker.Exporter")
     def test_repository_selection_before_api_setup_pauses_old_schedule(self, exporter):
         repo = {"id": 43, "full_name": "fixture/dedicated", "private": True, "default_branch": "main"}
@@ -625,6 +689,27 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(self.worker.config["retry_count"], 4)
         self.assertFalse(self.worker.config["sync_pending"])
         self.assertNotIn("next_sync", self.worker.config)
+
+    def test_token_permission_failure_preserves_verified_credentials_and_hides_api_response(self):
+        credentials = {"url": "https://zabbix.example/api_jsonrpc.php", "token": TOKEN}
+        atomic_json(self.root / "private/zabbix.json", credentials)
+        api = FakeAPI()
+        api.host.get = Mock(side_effect=APIRequestError(SENTINEL))
+        exporter = Exporter({}, api)
+        request_id = "c" * 32
+        atomic_json(self.root / "queue" / (request_id + ".json"), {
+            "id": request_id, "operation": "set_zabbix",
+            "params": {"url": "https://other.example/api_jsonrpc.php", "token": "b" * 64}
+        })
+        with patch("gitkeeper.worker.Exporter", return_value=exporter):
+            self.worker.drain()
+        self.assertEqual(read_json(self.root / "private/zabbix.json"), credentials)
+        status = read_json(self.worker.public)
+        self.assertEqual(status["state"], "Failed")
+        self.assertIn("API role permissions", status["error"])
+        self.assertEqual(status["last_request"], request_id)
+        self.assertNotIn(SENTINEL, self.worker.public.read_text())
+        self.assertEqual(list((self.root / "queue").iterdir()), [])
 
 
 if __name__ == "__main__":
