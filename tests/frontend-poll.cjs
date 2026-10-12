@@ -19,7 +19,7 @@ async function main() {
         elements.set(id, {checked: false, addEventListener: (type, callback) => fieldListeners.set(id, callback)});
     }
     elements.set('gitkeeper-overview', {dataset: {fingerprint: JSON.stringify([
-        state.last_request, state.state, state.device, state.last_commit, state.categories, state.account
+        state.last_request, state.state, state.device, state.last_commit, state.account
     ]).replaceAll('/', '\\/')}});
     elements.set('gitkeeper-api-configured', {textContent: '', dataset: {
         configured: 'Configured', unconfigured: 'Not configured'
@@ -56,6 +56,25 @@ async function main() {
     await poll();
     assert.equal(reloads, 0, 'Unchanged pending authorization must not reload because PHP escapes URL slashes');
     assert.equal(elements.get('gitkeeper-connection-github').textContent, 'Awaiting authorization');
+    elements.set('gitkeeper-category-results', {hidden: true});
+    for (const category of ['hosts', 'templates', 'actions', 'media_types', 'users']) {
+        elements.set('gitkeeper-category-row-' + category, {hidden: true});
+        for (const field of ['state', 'objects', 'progress', 'excluded']) {
+            elements.set('gitkeeper-category-' + field + '-' + category, {textContent: ''});
+        }
+    }
+    state.categories = {templates: {state: 'Running', processed: 1, total: 3}};
+    await timers.shift()();
+    assert.equal(reloads, 0, 'Category progress must update without reloading the page');
+    assert.equal(elements.get('gitkeeper-category-progress-templates').textContent, '1 / 3');
+    assert.equal(elements.get('gitkeeper-category-results').hidden, false);
+    focused = true;
+    state.categories.templates.processed = 2;
+    await timers.shift()();
+    assert.equal(reloads, 0);
+    assert.equal(elements.get('gitkeeper-category-progress-templates').textContent, '2 / 3',
+        'Category counts must stay live while form focus defers page reloads');
+    focused = false;
     state.error = 'Fixture authorization failure';
     await timers.shift()();
     assert.equal(reloads, 0);

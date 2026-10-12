@@ -240,6 +240,30 @@ class CoreTests(unittest.TestCase):
                 Exporter({}, api).export(["hosts"], Path(directory))
             self.assertFalse((Path(directory) / "manifest.json").exists())
 
+    def test_native_progress_counts_only_checked_objects_and_does_not_change_snapshot(self):
+        for version in ("7.0.0", "7.4.15"):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
+                api = FakeAPI(version)
+                progress = Mock()
+                first, second = Path(directory) / "first", Path(directory) / "second"
+                coverage = Exporter({}, api).export(["hosts", "templates"], first, progress)
+                Exporter({}, api).export(["hosts", "templates"], second)
+                for category, total in (("hosts", 2), ("templates", 1)):
+                    counts = [call.args[2]["processed"] for call in progress.call_args_list
+                              if call.args[:2] == (category, "Running") and "processed" in call.args[2]]
+                    self.assertEqual(counts, list(range(total + 1)))
+                    self.assertNotIn("processed", coverage[category])
+                self.assertEqual(read_json(first / "manifest.json"), read_json(second / "manifest.json"))
+                self.assertNotIn(SENTINEL, repr(progress.call_args_list))
+                api.fail = True
+                progress.reset_mock()
+                with self.assertRaises(Error), tempfile.TemporaryDirectory() as failed:
+                    Exporter({}, api).export(["templates"], Path(failed), progress)
+                counts = [call.args[2]["processed"] for call in progress.call_args_list
+                          if "processed" in call.args[2]]
+                self.assertEqual(counts, [0])
+                self.assertEqual(progress.call_args.args[:2], ("templates", "Failed"))
+
     def test_native_export_missing_an_item_fails(self):
         api = FakeAPI()
         api.item.rows.append({"itemid": "999", "key_": "missing"})

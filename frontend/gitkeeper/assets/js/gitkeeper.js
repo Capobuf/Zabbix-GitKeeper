@@ -25,7 +25,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const syncRequest = document.getElementById('gitkeeper-overview').dataset.syncRequest ?? '';
     const updateSynchronization = info => {
         if (!syncIndicator || !info) return;
-        const busy = ['Queued', 'Saving', 'Running'].includes(info.state);
+        const busy = ['Queued', 'Saving', 'Running', 'Publishing'].includes(info.state);
         syncIndicator.textContent = info.label;
         syncIndicator.classList.remove('green', 'red', 'grey');
         syncIndicator.classList.add(['Incomplete', 'Failed'].includes(info.state) ? 'red' : busy ? 'grey' : 'green');
@@ -49,6 +49,21 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('gitkeeper-submit-sync').disabled = !info.ready || busy;
         const save = document.getElementById('gitkeeper-submit-save');
         save.disabled = save.dataset.prerequisitesReady !== '1' || !info.can_save || busy;
+    };
+    const updateCategories = categories => {
+        const table = document.getElementById('gitkeeper-category-results');
+        if (!table) return;
+        const results = categories ?? {};
+        table.hidden = !Object.keys(results).length;
+        for (const category of ['hosts', 'templates', 'actions', 'media_types', 'users']) {
+            const result = results[category];
+            document.getElementById('gitkeeper-category-row-' + category).hidden = !result;
+            document.getElementById('gitkeeper-category-state-' + category).textContent = result?.state ?? '-';
+            document.getElementById('gitkeeper-category-objects-' + category).textContent = result?.objects ?? '-';
+            document.getElementById('gitkeeper-category-progress-' + category).textContent = result?.total != null
+                ? (result.processed ?? 0) + ' / ' + result.total : '-';
+            document.getElementById('gitkeeper-category-excluded-' + category).textContent = result?.excluded_fields?.length ?? 0;
+        }
     };
     const verificationPanel = document.getElementById('gitkeeper-api-verification');
     const apiRequest = verificationPanel?.dataset.requestId ?? '';
@@ -138,13 +153,14 @@ document.addEventListener('DOMContentLoaded', () => {
             if (syncIndicator && !state.synchronization) throw new Error('Status unavailable');
             // These results must stay live even when form edits defer a full page reload.
             updateSynchronization(state.synchronization);
+            updateCategories(state.categories);
             updateVerification(state.zabbix_verification?.state ?? (state.zabbix_configured ? 'Verified' : 'Not configured'),
                 state.zabbix_verification?.error);
             const apiConfigured = document.getElementById('gitkeeper-api-configured');
             if (apiConfigured) apiConfigured.textContent = state.zabbix_configured
                 ? apiConfigured.dataset.configured : apiConfigured.dataset.unconfigured;
             const fingerprint = JSON.stringify([state.last_request ?? null, state.state ?? null, state.device ?? null,
-                state.last_commit ?? null, state.categories ?? null, state.account ?? null]);
+                state.last_commit ?? null, state.account ?? null]);
             if (previous !== undefined && previous !== fingerprint
                     && !dirty && !document.querySelector('form input:focus, form select:focus')) {
                 window.location.reload();

@@ -250,6 +250,22 @@ change is performed by this command.
 - Tests and the next actual synchronization remain assigned to the user. The updated policy has not
   yet been verified by a completed live snapshot.
 
+## Long-running snapshot and category progress, 2026-10-12
+
+- Read-only inspection of the user-started synchronization showed an active worker and 239 written
+  template-object files, with the latest file just updated. Public status had remained at the templates
+  category start because progress was previously reported only at category boundaries.
+- That existing synchronization subsequently completed in 374 seconds, with no error and commit
+  `855bd2b25e91982f83a2c900be807972c61d5950` for the private destination repository. Public coverage reported
+  actions 5, hosts/groups 26, media types 39, templates/groups 376 and users/groups/roles 12. This is
+  observation of the user's actual run, not a newly triggered test or full integration certification.
+- Added checked/written host/template counts to operational progress, live category cells independent
+  of full-page reloads, and a separate GitHub publication phase. Progress counters do not enter the
+  deterministic manifest. Scheduled exports identify their operation as sync as well.
+- Added Python progress/manifest/privacy/failure fixtures and a frontend polling regression covering
+  live counts with a focused form. Tests and visual verification remain assigned to the user; the
+  ongoing synchronization was allowed to finish without interruption before deployment.
+
 ## Earlier automated checks
 
 Executed successfully on 2026-10-11:

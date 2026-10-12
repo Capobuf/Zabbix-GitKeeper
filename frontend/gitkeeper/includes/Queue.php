@@ -158,7 +158,7 @@ final class Queue {
             $phase = 'Queued';
         }
         elseif ($state === 'Running' && in_array($status['operation'] ?? '', ['save', 'sync'], true)) {
-            $phase = $missing ? 'Saving' : 'Running';
+            $phase = $missing ? 'Saving' : (($status['sync_phase'] ?? '') === 'Publishing' ? 'Publishing' : 'Running');
         }
         elseif (in_array($state, ['Failed', 'Partial / Incomplete'], true)
                 && in_array($status['operation'] ?? '', ['save', 'sync'], true)) {
@@ -175,11 +175,13 @@ final class Queue {
         }
         $labels = ['Incomplete' => _('Setup incomplete'), 'Queued' => _('Request queued'),
             'Saving' => _('Validating and saving settings'), 'Running' => _('Snapshot in progress'),
+            'Publishing' => _('Publishing snapshot to GitHub'),
             'Failed' => _('Synchronization failed'), 'Completed' => _('Snapshot completed'), 'Ready' => _('Configured')];
         $messages = ['Incomplete' => _('Complete the missing setup steps below before starting a snapshot.'),
             'Queued' => _('Your request was received. Processing starts automatically; if another operation is running, this request waits for it to finish. Do not submit it again.'),
             'Saving' => _('The worker is checking the selected repository and API permissions before saving your settings.'),
             'Running' => _('Settings are saved and the snapshot is in progress. Large categories can take several minutes. Follow the category results below.'),
+            'Publishing' => _('Configuration export is complete. The worker is preparing the Git commit and publishing it to the selected private repository. Wait for Snapshot completed.'),
             'Failed' => _('The last save or snapshot failed. Check Last error below; the missing steps list shows whether setup still needs attention.'),
             'Completed' => _('The snapshot completed successfully. See Last successful snapshot and Last commit below.'),
             'Ready' => _('Setup is complete. Sync now creates a snapshot using the saved settings.')];

@@ -95,10 +95,12 @@ class Exporter:
             if Counter(r["description"] for r in expected_triggers) - Counter(r["name"] for r in prototypes):
                 raise Incomplete("Native trigger prototype coverage does not match API enumeration.")
 
-    def native(self, category: str, stage: Path, excluded: set) -> int:
+    def native(self, category: str, stage: Path, excluded: set, progress=None) -> int:
         family, method, id_field = ("hosts", "host", "hostid") if category == "hosts" else (
             "templates", "template", "templateid")
         rows = self.enumerate(method, id_field, output=[id_field, "host"])
+        if progress:
+            progress(category, "Running", {"processed": 0, "total": len(rows)})
         groups = (("hostgroup", "groupid", "host_groups"),) if category == "hosts" else (
             ("templategroup", "groupid", "template_groups"),)
         group_count = 0
@@ -108,7 +110,7 @@ class Exporter:
             self.write(stage / category / f"{group_key}.json", sanitize(data, "export", excluded))
             group_count += len(objects)
         # One native object per file gives stable names and bounded export batches.
-        for row in rows:
+        for processed, row in enumerate(rows, 1):
             raw = self.api.configuration.export(format="json", options={family: [row[id_field]]})
             try:
                 data = json.loads(raw)["zabbix_export"]
@@ -119,6 +121,9 @@ class Exporter:
                 raise Incomplete("Native export did not include the requested object.")
             self.verify_native(row[id_field], returned[0], data)
             self.write(stage / category / f"{row[id_field]}.json", sanitize(data, "export", excluded))
+            if progress:
+                progress(category, "Running", {"processed": processed, "total": len(rows),
+                                               "excluded_fields": sorted(excluded)})
         again = self.enumerate(method, id_field, output=[id_field, "host"])
         if rows != again:
             raise Incomplete("Object enumeration changed during native export.")
@@ -169,7 +174,7 @@ class Exporter:
             if progress:
                 progress(category, "Running", {})
             try:
-                count = self.native(category, stage, excluded) if category in ("hosts", "templates") else (
+                count = self.native(category, stage, excluded, progress) if category in ("hosts", "templates") else (
                     self.collected(category, stage, excluded))
                 coverage[category] = {"objects": count, "enumeration": "verified", "state": "exported",
                                       "excluded_fields": sorted(excluded)}

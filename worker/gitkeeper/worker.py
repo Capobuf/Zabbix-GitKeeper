@@ -55,7 +55,8 @@ class Worker:
     def sync(self) -> None:
         if not self.config or not (self.private / "zabbix.json").exists():
             raise Error("Configure a Zabbix API token and save backup settings first.")
-        self.status.update(state="Running", last_attempt=time.time(), categories={}, error=None)
+        self.status.update(state="Running", operation="sync", sync_phase="Exporting",
+                           last_attempt=time.time(), categories={}, error=None)
         self.flush()
 
         repo = self.github.repository(self.config["repository_id"])
@@ -66,6 +67,8 @@ class Worker:
         with tempfile.TemporaryDirectory(prefix="export-", dir=self.private) as directory:
             stage = Path(directory)
             coverage = exporter.export(self.config["categories"], stage, progress)
+            self.status["sync_phase"] = "Publishing"
+            self.flush()
             repo = self.github.repository(self.config["repository_id"])
             commit, changed = Publisher(self.private / "repositories", repo, self.github.token()).publish(stage)
         now = time.time()
@@ -173,7 +176,7 @@ class Worker:
                 request = command(data)
                 if request["id"] != request_id:
                     raise Error("Request filename mismatch.")
-                self.status.update(operation=request["operation"], state="Running")
+                self.status.update(operation=request["operation"], state="Running", sync_phase=None)
                 self.flush()
                 self.execute(request)
             except Exception as exc:

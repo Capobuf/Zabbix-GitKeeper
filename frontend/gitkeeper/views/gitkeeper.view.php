@@ -68,7 +68,7 @@ else {
 $synchronization = $status['synchronization'] ?? Queue::synchronization($status);
 $sync_requirements = $synchronization['missing'];
 $sync_ready = $synchronization['ready'];
-$sync_busy = in_array($synchronization['state'], ['Queued', 'Saving', 'Running'], true);
+$sync_busy = in_array($synchronization['state'], ['Queued', 'Saving', 'Running', 'Publishing'], true);
 if ($synchronization['state'] !== 'Incomplete') {
     $next_step = $synchronization['message'];
 }
@@ -76,7 +76,7 @@ if ($synchronization['state'] !== 'Incomplete') {
 $overview = (new CFormGrid())->setId('gitkeeper-overview');
 $overview->setAttribute('data-sync-request', $data['sync_request'] ?? '');
 $overview->setAttribute('data-fingerprint', json_encode([$status['last_request'] ?? null, $status['state'] ?? null,
-    $status['device'] ?? null, $status['last_commit'] ?? null, $status['categories'] ?? null, $status['account'] ?? null]));
+    $status['device'] ?? null, $status['last_commit'] ?? null, $status['account'] ?? null]));
 $row($overview, _('Next step'), (new CSpan($next_step))->setId('gitkeeper-next-step'));
 $row($overview, _('Synchronization'), (new CSpan($synchronization['label']))
     ->setId('gitkeeper-synchronization')->setAttribute('role', 'status')
@@ -126,14 +126,26 @@ if (!$worker_ready) {
     $overview_body[] = (new CTag('h4', true, _('Worker installation')))->addClass('input-section-header');
     $overview_body[] = $installation;
 }
-if (!empty($status['categories'])) {
-    $table = (new CTable())->setHeader([_('Category'), _('Result'), _('Objects'), _('Excluded fields')]);
-    foreach ($status['categories'] as $category => $result) {
-        $table->addRow([$labels[$category] ?? $category, $result['state'] ?? '-', $result['objects'] ?? '-',
-            count($result['excluded_fields'] ?? [])]);
+$table = (new CTable())->setId('gitkeeper-category-results')
+    ->setHeader([_('Category'), _('Result'), _('Objects'), _('Hosts/templates processed'), _('Excluded fields')]);
+foreach ($labels as $category => $label) {
+    $result = $status['categories'][$category] ?? [];
+    $category_row = (new CRow([$label,
+        (new CSpan($result['state'] ?? '-'))->setId('gitkeeper-category-state-'.$category),
+        (new CSpan($result['objects'] ?? '-'))->setId('gitkeeper-category-objects-'.$category),
+        (new CSpan(isset($result['total']) ? ($result['processed'] ?? 0).' / '.$result['total'] : '-'))
+            ->setId('gitkeeper-category-progress-'.$category),
+        (new CSpan(count($result['excluded_fields'] ?? [])))->setId('gitkeeper-category-excluded-'.$category)
+    ]))->setId('gitkeeper-category-row-'.$category);
+    if (!$result) {
+        $category_row->setAttribute('hidden', 'hidden');
     }
-    $overview_body[] = $table;
+    $table->addRow($category_row);
 }
+if (empty($status['categories'])) {
+    $table->setAttribute('hidden', 'hidden');
+}
+$overview_body[] = $table;
 $sync_form = $form('sync');
 $sync_feedback = (new CSpan($synchronization['message']))->setId('gitkeeper-sync-feedback')
     ->setAttribute('role', 'status')->setAttribute('aria-live', 'polite')
