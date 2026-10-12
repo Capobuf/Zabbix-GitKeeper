@@ -1,6 +1,8 @@
 # Configuration tracking coverage
 
-**Neither Zabbix 7.0 nor 7.4 has been verified against a real instance.**
+**Neither Zabbix 7.0 nor 7.4 is certified.** Partial read-only collector checks passed on Zabbix 7.4.15
+for hosts/groups, actions, media types and users/groups/roles. Full template export and the complete
+frontend-to-GitHub acceptance sequence remain unverified. See [live evidence](validation.md).
 The implementation uses these version-specific official methods/properties, with synthetic fixtures
 for both target series. `Exported` describes the readable scope below, never complete recovery.
 The UI enables only these implemented collectors; other README categories have no exporter or checkbox.
@@ -25,6 +27,14 @@ Object totals count primary host/template objects plus their groups, and all ded
 objects; they are not a sum of every nested monitoring object. Failed/incomplete categories cannot
 publish a snapshot or update `last_success`.
 
-The policy was reviewed against official 7.0/7.4 API and exporter sources. That review and mock tests
-are **not** integration evidence. Future support declarations require fixtures from a disposable real
+On 7.4, configured discovery prototypes are independently enumerated through `discoveryruleprototype.get`
+and compared with the native discovery-rule list. Generated LLD rules (flags 5) and generated discovery
+prototypes (flags 7) are runtime results, excluded from this configuration-only comparison; configured
+roots (flags 1) and prototypes (flags 3) must still match. Their child item/trigger prototypes are checked
+using the same native coverage checks. Graph/host prototypes are not independently counted.
+
+The matrix above describes the original synthetic-fixture baseline; the partial live results are
+recorded separately in [validation](validation.md), without certifying an entire series. The policy
+was reviewed against official 7.0/7.4 API and exporter sources. Future support declarations require
+fixtures from a disposable real
 instance, expected-object comparisons and the full frontend → OAuth → commit acceptance sequence.

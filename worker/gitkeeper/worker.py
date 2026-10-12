@@ -25,13 +25,18 @@ class Worker:
         self.status = read_json(self.public, {"state": "Not configured", "github": "Disconnected"})
         self.config_path = self.private / "settings.json"
         self.config = read_json(self.config_path)
-        self.github = GitHub(self.install["client_id"], self.private)
+        self.app_path = self.private / "github-app.json"
+        client_id = read_json(self.app_path).get("client_id", self.install.get("client_id", ""))
+        self.github = GitHub(client_id, self.private)
 
     def flush(self) -> None:
         self.status["updated_at"] = time.time()
         self.status["settings"] = self.config
         self.status["available_categories"] = list(CATEGORIES)
+        self.status["github_client_id"] = self.github.client_id
         self.status["zabbix_configured"] = (self.private / "zabbix.json").exists()
+        # Publish the verified endpoint for UI prefilling, never the credentials.
+        self.status["zabbix_url"] = read_json(self.private / "zabbix.json").get("url")
         atomic_json(self.public, self.status, 0o640)
 
     def failure(self, exc: Exception) -> None:
@@ -51,6 +56,7 @@ class Worker:
             raise Error("Configure a Zabbix API token and save backup settings first.")
         self.status.update(state="Running", last_attempt=time.time(), categories={}, error=None)
         self.flush()
+
         repo = self.github.repository(self.config["repository_id"])
         exporter = Exporter(read_json(self.private / "zabbix.json"))
         def progress(category, state, result):
@@ -68,10 +74,34 @@ class Worker:
         atomic_json(self.config_path, self.config)
         self.flush()
 
+    def select_repository(self, repo: dict) -> None:
+        if self.config.get("repository_id") != repo["id"]:
+            self.config.update(repository_id=repo["id"], sync_pending=False, retry_count=0)
+            for key in ("next_sync", "retry_at"):
+                self.config.pop(key, None)
+            for key in ("last_commit", "last_success", "last_attempt", "categories", "changed"):
+                self.status.pop(key, None)
+        self.status.update(repository=repo, state="Ready")
+
     def execute(self, request: dict) -> None:
         op, params = request["operation"], request["params"]
         self.status["error"] = None
-        if op == "connect":
+        if op == "set_github_app":
+            if params["client_id"] != self.github.client_id:
+                # Credentials issued to another App must never be reused.
+                self.github.disconnect()
+                atomic_json(self.app_path, {"client_id": params["client_id"]})
+                self.github = GitHub(params["client_id"], self.private)
+                self.config.update(sync_pending=False)
+                for key in ("repository_id", "next_sync", "retry_at"):
+                    self.config.pop(key, None)
+                self.status.update(github="Disconnected", account=None, device=None, repositories=[],
+                                   repository=None, reconnect=False, state="Disconnected")
+            else:
+                atomic_json(self.app_path, {"client_id": params["client_id"]})
+        elif op == "connect":
+            if not self.github.client_id:
+                raise Error("Save your GitHub App Client ID in the GitHub tab before connecting.")
             self.github.disconnect()
             self.status.update(device=self.github.connect(), github="Disconnected", account=None,
                                reconnect=False, state="Disconnected")
@@ -85,9 +115,11 @@ class Worker:
             self.status.update(account=self.github.api("/user")["login"], repositories=self.github.repositories(),
                                github="Ready", reconnect=False, state="Ready")
         elif op == "create_repository":
-            self.github.create_repository(params["name"])
+            repo = self.github.create_repository(params["name"], params.get("owner"))
             self.status["repositories"] = self.github.repositories()
-            self.status["state"] = "Ready"
+            self.select_repository(repo)
+        elif op == "select_repository":
+            self.select_repository(self.github.repository(params["repository_id"]))
         elif op == "set_zabbix":
             credentials = {"url": params["url"], "token": params["token"]}
             exporter = Exporter(credentials)
@@ -109,7 +141,7 @@ class Worker:
             self.config = {**selected, "sync_pending": True, "retry_count": 0}
             self.status.update(state="Queued", repository=repo)
         elif op == "sync":
-            if not self.config.get("repository_id"):
+            if not all(self.config.get(key) for key in ("repository_id", "categories", "interval")):
                 raise Error("Save backup settings first.")
             self.config.update(sync_pending=True, retry_count=0)
             self.config.pop("retry_at", None)
@@ -151,6 +183,7 @@ class Worker:
             # Reload only after locking: another process may have just committed state.
             self.config = read_json(self.config_path)
             self.status = read_json(self.public, self.status)
+            self.github.client_id = read_json(self.app_path).get("client_id", self.install.get("client_id", ""))
             self.drain()
             try:
                 pending = self.github.device_path.exists()

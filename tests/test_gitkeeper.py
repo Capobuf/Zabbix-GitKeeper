@@ -7,12 +7,13 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from urllib.error import HTTPError
 
 from zabbix_utils import APIRequestError, ProcessingError
 
 from gitkeeper.exporter import Exporter, Incomplete
 from gitkeeper.git import Publisher
-from gitkeeper.github import GitHub, Reconnect
+from gitkeeper.github import GitHub, Reconnect, request as github_request
 from gitkeeper.policy import OMITTED, UNREADABLE, encode, sanitize
 from gitkeeper.storage import Error, Transient, atomic_json, command, process_lock, read_json, settings
 from gitkeeper.worker import Worker
@@ -29,14 +30,16 @@ class Collection:
 
     def get(self, **params):
         self.calls.append(params)
+        rows = [row for row in self.rows if all(key not in row or str(row[key]) == str(value)
+                for key, value in params.get("filter", {}).items())]
         if params.get("countOutput"):
-            return len(self.rows) + self.count_delta
+            return len(rows) + self.count_delta
         output = params.get("output")
         if isinstance(output, list):
             selected = [{k: v for k, v in row.items() if k in output or isinstance(v, (list, dict))}
-                        for row in self.rows]
+                        for row in rows]
             return copy.deepcopy(selected)
-        return copy.deepcopy(self.rows)
+        return copy.deepcopy(rows)
 
 
 class FakeAPI:
@@ -49,6 +52,7 @@ class FakeAPI:
         self.templategroup = Collection([{"groupid": "4", "name": "Templates", "uuid": "b" * 32}])
         self.item = Collection([{"itemid": "100", "key_": SENTINEL}, {"itemid": "101", "key_": SENTINEL + "_RAM"}])
         self.discoveryrule = Collection([{"itemid": "102", "key_": SENTINEL}])
+        self.discoveryruleprototype = Collection([])
         self.trigger = Collection([{"triggerid": "103", "description": "High CPU"}])
         self.itemprototype = Collection([])
         self.triggerprototype = Collection([])
@@ -112,6 +116,12 @@ class CoreTests(unittest.TestCase):
             command({"id": "a" * 32, "operation": "shell", "params": {}})
         with self.assertRaises(Error):
             command({"id": "a" * 32, "operation": "set_zabbix", "params": {"url": "http://localhost/", "token": TOKEN}})
+        for client_id in (None, "", "short value", "x" * 129, "$(command)"):
+            with self.assertRaises(Error):
+                command({"id": "a" * 32, "operation": "set_github_app", "params": {"client_id": client_id}})
+        with self.assertRaises(Error):
+            command({"id": "a" * 32, "operation": "set_github_app",
+                     "params": {"client_id": "fixture", "client_secret": SENTINEL}})
 
     def test_determinism_secrets_and_version_fixtures(self):
         for version in ("7.0.0", "7.4.0"):
@@ -156,6 +166,25 @@ class CoreTests(unittest.TestCase):
             with self.assertRaises(Incomplete):
                 Exporter({}, api).export(["hosts"], Path(directory))
 
+    def test_native_discovery_scope_checks_configured_nested_prototypes(self):
+        api = FakeAPI("7.4.15")
+        api.discoveryrule.rows[0]["flags"] = "1"
+        api.discoveryrule.rows.append({"itemid": "110", "key_": "generated.rule", "flags": "5"})
+        api.discoveryruleprototype.rows = [{"itemid": "111", "key_": "nested.rule[{#ID}]", "flags": "3"},
+                                           {"itemid": "112", "key_": "generated.prototype", "flags": "7"}]
+        obj = json.loads(api.native(options={"hosts": ["1"]}))["zabbix_export"]["hosts"][0]
+        prototype = {"name": "Nested discovery", "key": "nested.rule[{#ID}]", "type": "NESTED",
+                     "parent_discovery_rule": {"key": SENTINEL}, "item_prototypes": []}
+        obj["discovery_rules"].append(prototype)
+        exporter = Exporter({}, api)
+        exporter.verify_native("1", obj, {})
+        self.assertEqual(api.discoveryrule.calls[0]["filter"], {"flags": 1})
+        self.assertEqual(api.discoveryruleprototype.calls[0]["filter"], {"flags": 3})
+        self.assertNotIn(SENTINEL, encode(sanitize(prototype, "discovery", set())))
+        obj["discovery_rules"].pop()
+        with self.assertRaises(Incomplete):
+            exporter.verify_native("1", obj, {})
+
     def test_api_permission_failure_is_not_masked(self):
         api = FakeAPI()
         api.authentication.get.side_effect = RuntimeError(SENTINEL)
@@ -192,6 +221,27 @@ class GitHubTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.github = GitHub("fixture-client-id", Path(self.temp.name))
+
+    @patch("gitkeeper.github.urllib.request.build_opener")
+    def test_device_http_failure_identifies_client_id_without_raw_errors(self, opener):
+        for status in (401, 404):
+            opener.return_value.open.side_effect = HTTPError("https://github.com/login/device/code",
+                                                            status, SENTINEL, {}, None)
+            with self.assertRaises(Error) as raised:
+                github_request("https://github.com/login/device/code", "POST", {"client_id": "fixture"})
+            self.assertIn(f"HTTP {status}", str(raised.exception))
+            self.assertIn("Client ID (not App ID)", str(raised.exception))
+            self.assertNotIn(SENTINEL, str(raised.exception))
+
+    @patch("gitkeeper.github.request")
+    def test_device_configuration_errors_are_actionable_and_not_persisted(self, request):
+        for error, message in (("device_flow_disabled", "Enable Device Flow"),
+                               ("incorrect_client_credentials", "Copy the Client ID")):
+            request.return_value = {"error": error, "error_description": SENTINEL}
+            with self.assertRaisesRegex(Error, message) as raised:
+                self.github.connect()
+            self.assertNotIn(SENTINEL, str(raised.exception))
+            self.assertFalse(self.github.device_path.exists())
 
     @patch("gitkeeper.github.request")
     @patch("gitkeeper.github.time.time", return_value=100)
@@ -255,6 +305,18 @@ class GitHubTests(unittest.TestCase):
         self.github.create_repository("backup")
         self.assertEqual(self.github.api.call_args.args[2], {"name": "backup", "private": True, "auto_init": True})
         self.github.repository.assert_called_once_with(42)
+
+    def test_creation_uses_personal_or_organization_endpoint_and_checks_access(self):
+        self.github.repository = Mock(return_value={"id": 42, "private": True})
+        for owner, endpoint in (("Fixture", "/user/repos"), ("Test-Organization", "/orgs/Test-Organization/repos")):
+            self.github.api = Mock(side_effect=[{"login": "fixture"}, {"id": 42}])
+            self.github.create_repository("backup", owner)
+            self.assertEqual(self.github.api.call_args.args,
+                             (endpoint, "POST", {"name": "backup", "private": True, "auto_init": True}))
+        self.github.api = Mock(side_effect=[{"login": "fixture"}, {"id": 42}])
+        self.github.repository.side_effect = Error("App access missing")
+        with self.assertRaisesRegex(Error, "Private repository created, but App access is missing"):
+            self.github.create_repository("backup", "Test-Organization")
 
 
 class LocalPublisher(Publisher):
@@ -398,6 +460,112 @@ class WorkerTests(unittest.TestCase):
         atomic_json(self.install, {"state_dir": str(self.root), "client_id": "fixture"})
         self.worker = Worker(self.install)
 
+    @patch("gitkeeper.worker.Exporter")
+    def test_repository_selection_before_api_setup_pauses_old_schedule(self, exporter):
+        repo = {"id": 43, "full_name": "fixture/dedicated", "private": True, "default_branch": "main"}
+        self.worker.github.repository = Mock(return_value=repo)
+        self.worker.config = {"repository_id": 42, "categories": ["hosts"], "interval": 15,
+                              "sync_pending": True, "next_sync": 1, "retry_at": 1}
+        self.worker.status.update(last_commit="previous-target-commit", last_success=123,
+                                  categories={"hosts": {"state": "Completed"}})
+        self.worker.execute(command({"id": "a" * 32, "operation": "select_repository",
+                                     "params": {"repository_id": 43}}))
+        exporter.assert_not_called()
+        restarted = Worker(self.install)
+        self.assertEqual(restarted.config["repository_id"], 43)
+        self.assertFalse(restarted.config["sync_pending"])
+        for key in ("next_sync", "retry_at"):
+            self.assertNotIn(key, restarted.config)
+        self.assertEqual(restarted.config["categories"], ["hosts"])
+        self.assertEqual(restarted.status["repository"], repo)
+        for key in ("last_commit", "last_success", "categories"):
+            self.assertNotIn(key, restarted.status)
+        self.worker.config.update(sync_pending=True, next_sync=123)
+        self.worker.execute(command({"id": "b" * 32, "operation": "select_repository",
+                                     "params": {"repository_id": 43}}))
+        self.assertTrue(self.worker.config["sync_pending"])
+        self.assertEqual(self.worker.config["next_sync"], 123)
+        self.worker.github.repository.side_effect = Error("App access missing")
+        with self.assertRaises(Error):
+            self.worker.execute(command({"id": "c" * 32, "operation": "select_repository",
+                                         "params": {"repository_id": 44}}))
+        self.assertEqual(self.worker.config["repository_id"], 43)
+
+    @patch("gitkeeper.worker.Exporter")
+    def test_created_repository_is_selected_without_starting_export(self, exporter):
+        repo = {"id": 43, "private": True, "full_name": "fixture/backup", "default_branch": "main"}
+        self.worker.github.create_repository = Mock(return_value=repo)
+        self.worker.github.repositories = Mock(return_value=[repo])
+        self.worker.execute(command({"id": "a" * 32, "operation": "create_repository",
+                                     "params": {"name": "backup", "owner": "fixture"}}))
+        self.worker.github.create_repository.assert_called_once_with("backup", "fixture")
+        self.assertEqual(self.worker.config["repository_id"], 43)
+        self.assertFalse(self.worker.config["sync_pending"])
+        exporter.assert_not_called()
+        with self.assertRaisesRegex(Error, "Save backup settings first"):
+            self.worker.execute(command({"id": "b" * 32, "operation": "sync", "params": {}}))
+
+    def test_repository_commands_reject_invalid_ids_and_owner_paths(self):
+        for value in (0, -1, True, "42"):
+            with self.assertRaises(Error):
+                command({"id": "a" * 32, "operation": "select_repository", "params": {"repository_id": value}})
+        for value in ("", "../org", "org/repos", "org?token=secret", 42):
+            with self.assertRaises(Error):
+                command({"id": "a" * 32, "operation": "create_repository",
+                         "params": {"name": "backup", "owner": value}})
+
+    def test_app_change_removes_old_authorization_and_persists_across_restart(self):
+        atomic_json(self.worker.github.path, {"access_token": SENTINEL})
+        atomic_json(self.worker.github.device_path, {"device_code": SENTINEL})
+        atomic_json(self.root / "private/zabbix.json", {"url": "https://example/api_jsonrpc.php", "token": TOKEN})
+        self.worker.config = {"repository_id": 42, "next_sync": 1, "sync_pending": True,
+                              "retry_at": 1, "interval": 15, "categories": ["hosts"]}
+        self.worker.status.update(github="Ready", account="fixture", repositories=[{"id": 42}])
+        self.worker.execute(command({"id": "a" * 32, "operation": "set_github_app",
+                                     "params": {"client_id": "Iv1.fixture"}}))
+        self.assertFalse(self.worker.github.path.exists())
+        self.assertFalse(self.worker.github.device_path.exists())
+        self.assertEqual(self.worker.status["github"], "Disconnected")
+        self.assertEqual(self.worker.status["repositories"], [])
+        self.assertFalse(self.worker.config["sync_pending"])
+        for key in ("repository_id", "next_sync", "retry_at"):
+            self.assertNotIn(key, self.worker.config)
+        restarted = Worker(self.install)
+        self.assertEqual(restarted.github.client_id, "Iv1.fixture")
+        self.assertEqual(restarted.config["categories"], ["hosts"])
+        self.assertEqual(read_json(self.worker.public)["github_client_id"], "Iv1.fixture")
+        self.assertEqual(read_json(self.root / "private/zabbix.json")["token"], TOKEN)
+        self.assertNotIn(SENTINEL, self.worker.public.read_text())
+
+    def test_saving_same_app_keeps_connection_and_schedule(self):
+        atomic_json(self.worker.github.path, {"access_token": SENTINEL})
+        self.worker.config = {"repository_id": 42, "next_sync": 1, "sync_pending": True}
+        self.worker.status.update(github="Ready", account="fixture")
+        self.worker.execute(command({"id": "a" * 32, "operation": "set_github_app",
+                                     "params": {"client_id": "fixture"}}))
+        self.assertEqual(read_json(self.worker.github.path)["access_token"], SENTINEL)
+        self.assertEqual(self.worker.status["github"], "Ready")
+        self.assertTrue(self.worker.config["sync_pending"])
+        self.assertEqual(read_json(self.worker.app_path)["client_id"], "fixture")
+
+    @patch("gitkeeper.github.request")
+    def test_worker_without_app_rejects_connection_before_network(self, request):
+        atomic_json(self.install, {"state_dir": str(self.root)})
+        worker = Worker(self.install)
+        worker.flush()
+        self.assertEqual(worker.status["github_client_id"], "")
+        with self.assertRaisesRegex(Error, "Save your GitHub App Client ID"):
+            worker.execute(command({"id": "a" * 32, "operation": "connect", "params": {}}))
+        request.assert_not_called()
+
+    @patch("gitkeeper.worker.process_lock")
+    def test_app_configuration_is_reloaded_after_lock(self, lock):
+        lock.return_value.__enter__.return_value = True
+        atomic_json(self.worker.app_path, {"client_id": "Iv1.changed-by-another-tick"})
+        self.worker.tick()
+        self.assertEqual(self.worker.github.client_id, "Iv1.changed-by-another-tick")
+        self.assertEqual(read_json(self.worker.public)["github_client_id"], "Iv1.changed-by-another-tick")
+
     def test_revocation_and_library_errors_are_visible_without_secrets(self):
         self.worker.failure(RuntimeError(SENTINEL))
         self.assertNotIn(SENTINEL, self.worker.public.read_text())
@@ -429,6 +597,13 @@ class WorkerTests(unittest.TestCase):
             "params": {"url": "https://zabbix.example/api_jsonrpc.php", "token": TOKEN}}))
         self.assertNotIn(TOKEN, self.worker.public.read_text())
         self.assertEqual(read_json(self.root / "private/zabbix.json")["token"], TOKEN)
+        self.assertEqual(read_json(self.worker.public)["zabbix_url"], "https://zabbix.example/api_jsonrpc.php")
+        self.worker = Worker(self.install)
+        self.worker.flush()
+        self.assertEqual(read_json(self.worker.public)["zabbix_url"], "https://zabbix.example/api_jsonrpc.php")
+        self.worker.execute(command({"id": "b" * 32, "operation": "clear_zabbix", "params": {}}))
+        self.assertIsNone(read_json(self.worker.public)["zabbix_url"])
+        self.assertNotIn(TOKEN, self.worker.public.read_text())
 
     @patch("gitkeeper.worker.process_lock")
     @patch("gitkeeper.worker.Exporter")
