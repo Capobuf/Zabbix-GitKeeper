@@ -153,6 +153,48 @@ class CoreTests(unittest.TestCase):
         data = [{"type": "MULTIPLIER"}, {"type": "RTRIM"}]
         self.assertEqual(sanitize(data, "preprocessing", set()), data)
 
+    def test_native_host_prototype_group_links_and_safe_policy_error(self):
+        for version in ("7.0.0", "7.4.15"):
+            with self.subTest(version=version):
+                api = FakeAPI(version)
+                original = api.native
+                unexpected = False
+
+                def native(**params):
+                    data = json.loads(original(**params))
+                    family = next(iter(params["options"]))
+                    group = {"name": "Discovered hosts"}
+                    if unexpected:
+                        group[SENTINEL] = SENTINEL
+                    data["zabbix_export"][family][0]["discovery_rules"][0]["host_prototypes"] = [{
+                        "host": "discovered-{#ID}", "name": "Discovered host",
+                        "group_links": [{"group": group}], "group_prototypes": [{"name": "Hosts/{#ID}"}],
+                        "macros": [{"macro": "{$PASSWORD}", "value": SENTINEL}]
+                    }]
+                    return json.dumps(data)
+
+                api.configuration.export = native
+                with tempfile.TemporaryDirectory() as directory:
+                    stage = Path(directory)
+                    Exporter({}, api).export(["hosts", "templates"], stage)
+                    for family, object_id in (("hosts", "1"), ("templates", "10")):
+                        data = read_json(stage / family / f"{object_id}.json")
+                        prototype = data[family][0]["discovery_rules"][0]["host_prototypes"][0]
+                        self.assertEqual(prototype["group_links"], [{"group": {"name": "Discovered hosts"}}])
+                        self.assertNotIn(SENTINEL, encode(data))
+                unexpected = True
+                with tempfile.TemporaryDirectory() as directory:
+                    stage = Path(directory)
+                    progress = Mock()
+                    with self.assertRaises(Error) as result:
+                        Exporter({}, api).export(["templates"], stage, progress)
+                    self.assertIn("Cannot export templates (Zabbix " + version[:3] + ")", str(result.exception))
+                    self.assertIn("/templates[]/discovery_rules[]/host_prototypes[]/group_links[]/group",
+                                  str(result.exception))
+                    self.assertNotIn(SENTINEL, str(result.exception))
+                    self.assertFalse((stage / "manifest.json").exists())
+                    self.assertEqual(progress.call_args.args[:2], ("templates", "Failed"))
+
     def test_incomplete_enumeration_does_not_succeed(self):
         api = FakeAPI()
         api.host.count_delta = 1

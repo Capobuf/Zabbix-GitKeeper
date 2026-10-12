@@ -217,6 +217,22 @@ change is performed by this command.
   check from automatic execution. Tests, trigger verification and visual checks are left to the user.
   No synthetic request or snapshot was submitted for verification.
 
+## Native host-prototype group links, 2026-10-12
+
+- Installed status identified a templates-category policy rejection on Zabbix 7.4.15, after actions,
+  hosts and media types completed export. A read-only schema inspection of 364 native template
+  responses took about 20 seconds and identified 51 occurrences of `group` inside prototype
+  `group_links`. It inspected structural field names only; no raw values or credentials were printed,
+  no snapshot was written or pushed, and no worker request was queued.
+- The policy incorrectly treated group links as direct name references. Official 7.0 and 7.4 validators
+  define `group_links[]/group/name`. Added the explicit nested context to the shared policy, with no
+  server-specific exception. Unknown fields continue to stop publication.
+- Policy errors now include category, reviewed series and the containing schema path, without
+  reflecting unknown keys or values. Added a regression for host/template prototype group links in
+  both series, macro redaction and safe rejection without a success manifest.
+- Tests and the next actual synchronization are left to the user, as requested. This diagnosis and
+  correction do not establish a completed end-to-end snapshot.
+
 ## Earlier automated checks
 
 Executed successfully on 2026-10-11:

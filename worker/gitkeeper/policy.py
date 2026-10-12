@@ -13,6 +13,10 @@ OMITTED = "<omitted: potentially sensitive>"
 UNREADABLE = "<not-readable: secret or vault macro>"
 
 
+class PolicyError(Error):
+    """Unsupported structure, described only with reviewed schema paths."""
+
+
 def rule(identity="", scalar="", redact="", children=None):
     return {**{k: "identity" for k in identity.split()}, **{k: "scalar" for k in scalar.split()},
             **{k: "redact" for k in redact.split()}, **(children or {})}
@@ -33,12 +37,13 @@ HOST = rule("uuid host name", "status monitored_by ipmi_authtype ipmi_privilege 
             "description ipmi_username ipmi_password inventory httptests dashboards",
             {"templates": "reference", "groups": "reference", "interfaces": "interface", "items": "item",
              "discovery_rules": "discovery", "macros": "macro", "tags": "tags", "valuemaps": "valuemap",
-             "proxy": "reference", "proxy_group": "reference", "group_links": "reference",
+             "proxy": "reference", "proxy_group": "reference", "group_links": "group_link",
              "group_prototypes": "reference"})
 SCHEMAS = {
     "export": rule("version", "", "date", {"host_groups": "group", "template_groups": "group",
                     "hosts": "host", "templates": "template", "triggers": "trigger", "graphs": "graph"}),
-    "group": rule("uuid name"), "reference": rule("name"), "master": rule("", "", "key"),
+    "group": rule("uuid name"), "reference": rule("name"),
+    "group_link": rule(children={"group": "reference"}), "master": rule("", "", "key"),
     "host": HOST, "template": {**HOST, "template": "identity", "vendor": "vendor",
                                 "wizard_ready": "scalar", "readme": "redact"},
     "vendor": rule("name version"), "item": ITEM,
@@ -119,7 +124,8 @@ def sanitize(value, context: str, excluded: set[str], path: str = "", collection
     schema = SCHEMAS[context]
     if set(value) - set(schema):
         # Do not reflect arbitrary field names or API values into public errors.
-        raise Error("Unclassified export field; snapshot stopped. Review the version-specific policy.")
+        raise PolicyError(f"Unsupported fields in {path or '/'} (schema: {context}); snapshot stopped. "
+                          "GitKeeper's export policy must be updated for this structure.")
     for key, item in value.items():
         field_path = path + "/" + key
         policy = schema[key]

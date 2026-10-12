@@ -33,6 +33,14 @@ prototypes (flags 7) are runtime results, excluded from this configuration-only 
 roots (flags 1) and prototypes (flags 3) must still match. Their child item/trigger prototypes are checked
 using the same native coverage checks. Graph/host prototypes are not independently counted.
 
+Host-prototype `group_links` use the native nested form `[{"group": {"name": "..."}}]` in both
+[7.0](https://github.com/zabbix/zabbix/blob/release/7.0/ui/include/classes/import/validators/C70XmlValidator.php)
+and [7.4](https://github.com/zabbix/zabbix/blob/7.4.15/ui/include/classes/import/validators/C74XmlValidator.php).
+The shared policy preserves this structure and group-name metadata. Unknown fields still stop the
+snapshot; the public error identifies the category, reviewed Zabbix series and containing schema path,
+without echoing unknown field names or API values. This indicates a GitKeeper policy gap rather than
+asking the administrator to change their Zabbix configuration.
+
 The matrix above describes the original synthetic-fixture baseline; the partial live results are
 recorded separately in [validation](validation.md), without certifying an entire series. The policy
 was reviewed against official 7.0/7.4 API and exporter sources. Future support declarations require

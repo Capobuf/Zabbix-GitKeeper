@@ -8,7 +8,7 @@ from pathlib import Path
 from zabbix_utils import APIRequestError, ProcessingError, ZabbixAPI
 
 from . import __version__
-from .policy import encode, sanitize
+from .policy import PolicyError, encode, sanitize
 from .storage import Error, Transient, api_url
 
 
@@ -176,6 +176,8 @@ class Exporter:
             except Exception as exc:
                 if progress:
                     progress(category, "Incomplete" if isinstance(exc, Incomplete) else "Failed", {})
+                if isinstance(exc, PolicyError):
+                    raise PolicyError(f"Cannot export {category} (Zabbix {self.series}): {exc}") from None
                 if isinstance(exc, Error):
                     raise
                 if isinstance(exc, ProcessingError):
