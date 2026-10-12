@@ -122,6 +122,8 @@ class Worker:
         elif op == "select_repository":
             self.select_repository(self.github.repository(params["repository_id"]))
         elif op == "set_zabbix":
+            self.status["zabbix_verification"] = {"id": request["id"], "state": "Running", "error": None}
+            self.flush()
             credentials = {"url": params["url"], "token": params["token"]}
             if "verify_tls" in params:
                 credentials["verify_tls"] = params["verify_tls"]
@@ -130,11 +132,13 @@ class Worker:
             exporter.check_permissions(self.config.get("categories", list(CATEGORIES)))
             atomic_json(self.private / "zabbix.json", credentials)
             self.status.update(zabbix_version=exporter.version, state="Ready")
+            self.status["zabbix_verification"]["state"] = "Verified"
         elif op == "clear_zabbix":
             (self.private / "zabbix.json").unlink(missing_ok=True)
             self.config.update(sync_pending=False)
             self.config.pop("next_sync", None)
             self.status["state"] = "Not configured"
+            self.status["zabbix_verification"] = {"id": request["id"], "state": "Removed", "error": None}
         elif op == "save":
             selected = params["settings"]
             repo = self.github.repository(selected["repository_id"])
@@ -174,6 +178,9 @@ class Worker:
                 self.execute(request)
             except Exception as exc:
                 self.failure(exc)
+                verification = self.status.get("zabbix_verification", {})
+                if verification.get("id") == request_id and verification.get("state") == "Running":
+                    verification.update(state="Failed", error=self.status["error"])
             finally:
                 claimed.unlink(missing_ok=True)
                 self.status["last_request"] = request_id

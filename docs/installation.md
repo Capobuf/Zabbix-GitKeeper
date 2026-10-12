@@ -114,6 +114,10 @@ and choose an accessible private repository. Saving the same ID keeps the connec
    The role must allow API calls for each selected collector and `configuration.export`.
 2. Wait for the next cron tick, normally within one minute, and check **Zabbix API > Worker status /
    Last error**. Successful verification shows **Configured**. Tokens never reappear in the UI.
+   The persistent result panel distinguishes **Token verification queued**, **Verifying the token**,
+   **Token verified and saved** and **Token verification failed**. Creation alone does not finish setup.
+   Success links to Configuration / Save & Sync; a verification failure shows its own error even if
+   another operation later changes the general worker status. A failed replacement keeps the old token.
 3. Select **Connect GitHub**, wait for the device code, open **Authorize on GitHub** and authorize your account.
    Return to GitKeeper; the page checks the result automatically. App installation and repository access
    are a separate step on GitHub. The worker runs once per minute, even if the browser is closed.

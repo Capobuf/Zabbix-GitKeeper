@@ -16,6 +16,24 @@ document.addEventListener('DOMContentLoaded', () => {
         const feedback = document.getElementById('gitkeeper-sync-feedback');
         feedback.textContent = feedback.dataset.submitting;
     });
+    const verificationPanel = document.getElementById('gitkeeper-api-verification');
+    const apiRequest = verificationPanel?.dataset.requestId ?? '';
+    const updateVerification = (state, error = '') => {
+        if (!verificationPanel) return;
+        const titles = JSON.parse(verificationPanel.dataset.titles);
+        const messages = JSON.parse(verificationPanel.dataset.messages);
+        if (!titles[state]) state = 'Unavailable';
+        const title = document.getElementById('gitkeeper-api-verification-title');
+        title.textContent = titles[state];
+        title.classList.remove('green', 'red', 'grey');
+        title.classList.add(state === 'Verified' ? 'green' : state === 'Failed' ? 'red' : 'grey');
+        document.getElementById('gitkeeper-api-verification-message').textContent = messages[state];
+        document.getElementById('gitkeeper-api-verification-error').textContent = error ?? '';
+        document.getElementById('gitkeeper-api-verification-next').hidden = state !== 'Verified';
+    };
+    for (const id of ['gitkeeper-form-bootstrap', 'gitkeeper-form-api']) {
+        document.getElementById(id)?.addEventListener('submit', () => updateVerification('Submitting'));
+    }
     const apiUrls = ['gitkeeper-bootstrap-url', 'gitkeeper-existing-url'].map(id => document.getElementById(id));
     const apiSource = document.getElementById('gitkeeper-api-url-source');
     const apiWarning = document.getElementById('gitkeeper-api-url-warning');
@@ -76,11 +94,14 @@ document.addEventListener('DOMContentLoaded', () => {
     async function poll() {
         if (stopped) return;
         try {
-            const response = await fetch('zabbix.php?action=gitkeeper.status', {
+            const response = await fetch('zabbix.php?action=gitkeeper.status'
+                + (apiRequest ? '&api_request=' + encodeURIComponent(apiRequest) : ''), {
                 credentials: 'same-origin', cache: 'no-store'
             });
             if (!response.ok) throw new Error('Status unavailable');
             const state = await response.json();
+            updateVerification(state.zabbix_verification?.state ?? (state.zabbix_configured ? 'Verified' : 'Not configured'),
+                state.zabbix_verification?.error);
             const apiConfigured = document.getElementById('gitkeeper-api-configured');
             if (apiConfigured) apiConfigured.textContent = state.zabbix_configured
                 ? apiConfigured.dataset.configured : apiConfigured.dataset.unconfigured;
@@ -103,6 +124,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
         } catch (_) {
+            updateVerification('Unavailable');
             for (const id of ['gitkeeper-error', 'gitkeeper-connection-error', 'gitkeeper-api-error']) {
                 const element = document.getElementById(id);
                 if (element) element.textContent = 'Status unavailable. Reload the page and check your session.';

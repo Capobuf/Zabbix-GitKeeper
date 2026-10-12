@@ -14,7 +14,7 @@ class Status extends CController {
     }
 
     protected function checkInput(): bool {
-        return $this->validateInput([]);
+        return $this->validateInput(['api_request' => 'string']);
     }
 
     protected function checkPermissions(): bool {
@@ -23,7 +23,7 @@ class Status extends CController {
 
     protected function doAction(): void {
         try {
-            $status = (new Queue())->status();
+            $status = (new Queue())->status($this->getInput('api_request', ''));
         }
         catch (\Throwable $e) {
             $status = ['state' => 'Failed', 'error' => 'Cannot read worker status.'];

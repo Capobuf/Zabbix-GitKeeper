@@ -180,6 +180,16 @@ change is performed by this command.
   tab links and submission/queue feedback. Worker Ready is no longer presented as overall setup readiness.
 - Tests and visual verification are left to the user for this change, as requested.
 
+## Persistent API token verification result, 2026-10-12
+
+- Read-only installed status showed `set_zabbix` completed with no error, `zabbix_configured: true`
+  and the verified endpoint `http://127.0.0.1/zabbix/api_jsonrpc.php`. No request was pending.
+- Added a persistent API result panel, live submission/queued/running/verified/failed states and a
+  Configuration / Save & Sync next step. The redirect carries only the request ID; queued status is
+  derived from its filename without reading credentials. The worker retains the verification result
+  and its safe error separately from other operations. Existing verified credentials show success.
+- Tests and visual verification are left to the user for this change, as requested.
+
 ## Earlier automated checks
 
 Executed successfully on 2026-10-11:

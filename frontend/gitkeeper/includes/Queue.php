@@ -125,7 +125,7 @@ final class Queue {
         return $id;
     }
 
-    public function status(): array {
+    public function status(string $api_request = ''): array {
         $file = $this->root.'/public/status.json';
         $status = is_readable($file) ? json_decode(file_get_contents($file), true, 64, JSON_THROW_ON_ERROR)
             : ['state' => 'Not configured', 'github' => 'Disconnected',
@@ -135,6 +135,11 @@ final class Queue {
             $status['state'] = 'Queued';
         }
         $status['queued_requests'] = count($pending);
+        // Match the redirected request by filename, without reading token-bearing queue contents.
+        if (preg_match('/^[a-f0-9]{32}$/D', $api_request)
+                && is_file($this->root.'/queue/'.$api_request.'.json')) {
+            $status['zabbix_verification'] = ['id' => $api_request, 'state' => 'Queued', 'error' => null];
+        }
         return $status;
     }
 }

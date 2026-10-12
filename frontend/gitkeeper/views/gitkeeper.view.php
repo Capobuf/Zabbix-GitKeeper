@@ -321,7 +321,44 @@ $row($api, _('Existing API token'), (new CTextBox('api_token'))->setAttribute('t
     ->setAttribute('pattern', '[a-fA-F0-9]{64}')
     ->setAttribute('title', _('Enter the complete 64-character API token.'))
     ->setWidth(ZBX_TEXTAREA_STANDARD_WIDTH), 'api_token');
+$verification_titles = ['Queued' => _('Token verification queued'), 'Running' => _('Verifying the token...'),
+    'Verified' => _('Token verified and saved'), 'Failed' => _('Token verification failed'),
+    'Removed' => _('Stored token removed'), 'Not configured' => _('API token not configured'),
+    'Submitting' => _('Submitting token setup...'), 'Unavailable' => _('Verification status unavailable')];
+$verification_messages = [
+    'Queued' => _('Your request was received. Verification has not finished yet; it normally starts within one minute. This result updates automatically.'),
+    'Running' => _('The worker is checking API access and required permissions. Wait for the result here.'),
+    'Verified' => _('The token passed verification and was saved securely. Zabbix API setup is complete.'),
+    'Failed' => _('The submitted token was not activated. Check the error below before retrying. Any previous verified token remains stored.'),
+    'Removed' => _('The worker no longer has an API token. Create or verify a token to enable exports.'),
+    'Not configured' => _('Create a token or submit an existing one below. Setup completes only when this panel confirms verification.'),
+    'Submitting' => _('Sending your request. Token creation and verification are separate steps; wait for the verification result.'),
+    'Unavailable' => _('The verification result could not be retrieved. Reload the page and check your session; this does not mean the token failed.')
+];
+$verification = $status['zabbix_verification'] ?? [];
+$verification_state = $verification['state'] ?? ($api_ready ? 'Verified' : 'Not configured');
+if (!isset($verification_titles[$verification_state])) {
+    $verification_state = 'Unavailable';
+}
+$verification_color = $verification_state === 'Verified' ? ZBX_STYLE_GREEN
+    : ($verification_state === 'Failed' ? ZBX_STYLE_RED : ZBX_STYLE_GREY);
+$verification_next = (new CTag('p', true, (new CLink(_('Next: open Configuration and click Save & Sync to start a snapshot.'),
+    '#gitkeeper-tab-configuration'))->setAttribute('data-gitkeeper-tab', 'gitkeeper-tab-configuration')))
+    ->setId('gitkeeper-api-verification-next');
+if ($verification_state !== 'Verified') {
+    $verification_next->setAttribute('hidden', 'hidden');
+}
+$verification_panel = (new CDiv([
+    (new CTag('h4', true, $verification_titles[$verification_state]))
+        ->setId('gitkeeper-api-verification-title')->addClass($verification_color),
+    (new CTag('p', true, $verification_messages[$verification_state]))->setId('gitkeeper-api-verification-message'),
+    (new CTag('p', true, $verification['error'] ?? ''))->setId('gitkeeper-api-verification-error')->addClass(ZBX_STYLE_RED),
+    $verification_next
+]))->setId('gitkeeper-api-verification')->setAttribute('role', 'status')->setAttribute('aria-live', 'polite')
+    ->setAttribute('data-titles', $verification_titles)->setAttribute('data-messages', $verification_messages)
+    ->setAttribute('data-request-id', $data['api_request'] ?? '');
 $api_body = [
+    $verification_panel,
     $row(new CFormGrid(), _('Zabbix API'), (new CSpan($api_ready ? _('Configured') : _('Not configured')))
         ->setId('gitkeeper-api-configured')->setAttribute('data-configured', _('Configured'))
         ->setAttribute('data-unconfigured', _('Not configured')))

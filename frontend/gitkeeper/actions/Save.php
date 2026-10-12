@@ -43,8 +43,8 @@ class Save extends CController {
                 'test_github' => _('Connection check requested. The result will appear in the connection status.'),
                 'select_repository' => _('Repository selection requested. The selected destination will update when confirmed.'),
                 'create_repository' => _('Private repository creation requested. Wait for the selected destination or an error before trying again.'),
-                'create_zabbix_token' => _('API token created and verification requested. Wait for Zabbix API to show Configured.'),
-                'set_zabbix' => _('API token verification requested. Wait for Zabbix API to show Configured.'),
+                'create_zabbix_token' => _('Token created. Verification is queued; setup is not complete yet. Follow the verification result in Zabbix API.'),
+                'set_zabbix' => _('Verification queued. The submitted token is not active yet. Follow the verification result in Zabbix API.'),
                 'clear_zabbix' => _('Stored token removal requested. This does not revoke the token in Zabbix.'),
                 'save' => _('Settings save and snapshot requested. Follow progress in Overview.'),
                 'sync' => _('Snapshot queued. It starts on the next worker tick, normally within one minute. Follow Worker status and Last error in Overview.')
@@ -99,7 +99,11 @@ class Save extends CController {
             elseif ($op === 'select_repository') {
                 $params = ['repository_id' => (int) $this->getInput('repository_id', 0)];
             }
-            (new Queue())->submit($op, $params);
+            $request_id = (new Queue())->submit($op, $params);
+            if ($op === 'set_zabbix') {
+                $redirect = new CControllerResponseRedirect((new CUrl('zabbix.php'))
+                    ->setArgument('action', 'gitkeeper.view')->setArgument('api_request', $request_id));
+            }
             CMessageHelper::setSuccessTitle($message);
         }
         catch (\Throwable $e) {
