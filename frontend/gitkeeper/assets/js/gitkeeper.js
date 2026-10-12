@@ -1,6 +1,21 @@
 /* Read-only polling; mutations use native forms and the Zabbix CSRF token. */
 document.addEventListener('DOMContentLoaded', () => {
     if (!document.getElementById('gitkeeper-overview')) return;
+    document.addEventListener('click', event => {
+        const link = event.target.closest('[data-gitkeeper-tab]');
+        if (!link) return;
+        const header = document.getElementById('tab_' + link.dataset.gitkeeperTab);
+        if (header) {
+            event.preventDefault();
+            header.click();
+            header.focus();
+        }
+    });
+    const syncForm = document.getElementById('gitkeeper-form-sync');
+    if (syncForm) syncForm.addEventListener('submit', () => {
+        const feedback = document.getElementById('gitkeeper-sync-feedback');
+        feedback.textContent = feedback.dataset.submitting;
+    });
     const apiUrls = ['gitkeeper-bootstrap-url', 'gitkeeper-existing-url'].map(id => document.getElementById(id));
     const apiSource = document.getElementById('gitkeeper-api-url-source');
     const apiWarning = document.getElementById('gitkeeper-api-url-warning');

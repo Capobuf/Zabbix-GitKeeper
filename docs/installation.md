@@ -131,6 +131,9 @@ and choose an accessible private repository. Saving the same ID keeps the connec
    settings validation and the first export. Watch **Queued → Running → Completed**, or the error/partial result.
 6. Inspect `gitkeeper/manifest.json` and category JSON files on the repository's default branch.
    Run **Sync now** without a configuration change: the commit SHA should stay the same.
+   If it is disabled, Overview lists every missing setup condition beside the button, with links to
+   the relevant tabs. **Worker status: Ready** is distinct from **Synchronization: Configured**:
+   synchronization also requires a verified API token and saved backup categories/interval.
    Change a tracked non-secret setting (for example an item interval or action status) and repeat:
    one commit should contain the corresponding diff.
 

@@ -172,6 +172,14 @@ change is performed by this command.
   success/fallback. These changes have not been deployed to the supplied server; its loopback endpoint,
   real token creation/verification and full export/publishing remain unverified.
 
+## Synchronization setup guidance, 2026-10-12
+
+- Read-only inspection of the installed public status showed GitHub Ready and a saved private
+  destination, with no verified Zabbix API token or saved categories/interval. No snapshot was queued.
+- Added an explicit synchronization setup state, all missing prerequisites beside Sync now, native
+  tab links and submission/queue feedback. Worker Ready is no longer presented as overall setup readiness.
+- Tests and visual verification are left to the user for this change, as requested.
+
 ## Earlier automated checks
 
 Executed successfully on 2026-10-11:

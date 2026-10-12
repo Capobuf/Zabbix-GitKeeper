@@ -47,7 +47,7 @@ class Save extends CController {
                 'set_zabbix' => _('API token verification requested. Wait for Zabbix API to show Configured.'),
                 'clear_zabbix' => _('Stored token removal requested. This does not revoke the token in Zabbix.'),
                 'save' => _('Settings save and snapshot requested. Follow progress in Overview.'),
-                'sync' => _('Snapshot requested. Follow progress in Overview.')
+                'sync' => _('Snapshot queued. It starts on the next worker tick, normally within one minute. Follow Worker status and Last error in Overview.')
             ];
             $message = $messages[$op] ?? _('Request submitted. Wait for the status to update.');
             $params = [];
@@ -119,6 +119,7 @@ class Save extends CController {
                 'create_repository' => _('Repository creation was not submitted. Check the owner, repository name and worker queue permissions.'),
                 'select_repository' => _('Repository selection was not submitted. Select a repository and check the worker queue permissions.'),
                 'save' => _('Settings were not submitted. Select a repository, at least one category and an interval; check the worker queue permissions.'),
+                'sync' => _('Snapshot could not be queued. Check worker installation, queue permissions and pending requests. Follow the missing setup steps beside Sync now in Overview.'),
                 'set_zabbix' => _('Token verification was not submitted. Check the API URL, token format and worker queue permissions.'),
                 'create_zabbix_token' => _('Token setup was not submitted. Check the API URL, consent and worker queue permissions.')
             ];
