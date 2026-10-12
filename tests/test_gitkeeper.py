@@ -17,7 +17,8 @@ from gitkeeper.exporter import Exporter, Incomplete
 from gitkeeper.git import Publisher
 from gitkeeper.github import GitHub, Reconnect, request as github_request
 from gitkeeper.policy import UNREADABLE, encode, sanitize
-from gitkeeper.storage import Error, Transient, api_url, atomic_json, command, process_lock, read_json, settings
+from gitkeeper.storage import Error, Transient, api_url, atomic_json, command, process_lock, read_json, settings, template_scope
+from gitkeeper.scope import resolve
 from gitkeeper.worker import Worker
 
 SENTINEL = "TEST_SECRET_NEVER_PUBLISH"
@@ -48,8 +49,10 @@ class FakeAPI:
     def __init__(self, version="7.0.0"):
         self.apiinfo = SimpleNamespace(version=lambda: version)
         self.authentication = SimpleNamespace(get=Mock(return_value={"authentication_type": "0"}))
-        self.host = Collection([{"hostid": "1", "host": "server"}, {"hostid": "2", "host": "router"}])
-        self.template = Collection([{"templateid": "10", "host": "Linux"}])
+        self.host = Collection([{"hostid": "1", "host": "server", "parentTemplates": [{"templateid": "10"}]},
+                                {"hostid": "2", "host": "router", "parentTemplates": []}])
+        self.template = Collection([{"templateid": "10", "host": "Linux", "parentTemplates": []}])
+        self.hostprototype = Collection([])
         self.hostgroup = Collection([{"groupid": "3", "name": "Servers", "uuid": "a" * 32}])
         self.templategroup = Collection([{"groupid": "4", "name": "Templates", "uuid": "b" * 32}])
         self.item = Collection([{"itemid": "100", "key_": SENTINEL}, {"itemid": "101", "key_": SENTINEL + "_RAM"}])
@@ -109,6 +112,200 @@ class FakeAPI:
             obj.update(wizard_ready="YES", readme=SENTINEL)
             obj["macros"][0]["config"] = {"value": SENTINEL}
         return json.dumps({"zabbix_export": {"version": self.version[:3], "date": SENTINEL, family: [obj]}})
+
+
+class ScopeTests(unittest.TestCase):
+    used = {"mode": "used", "include_templateids": []}
+
+    @staticmethod
+    def api(version="7.0.0"):
+        api = FakeAPI(version)
+        api.template.rows += [{"templateid": str(i), "host": f"Template {i}", "parentTemplates": []}
+                              for i in range(11, 19)]
+        api.configuration.export = Mock(wraps=api.native)
+        return api
+
+    def test_settings_and_queue_strict_scope_and_legacy(self):
+        legacy = {"repository_id": 42, "categories": ["templates"], "interval": 4320}
+        self.assertEqual(settings(legacy), legacy)
+        self.assertEqual(template_scope()["mode"], "all")
+        valid = {"mode": "used", "include_templateids": ["11", "2", "11"]}
+        self.assertEqual(settings({**legacy, "template_scope": valid})["template_scope"]["include_templateids"], ["2", "11"])
+        for invalid in (None, {}, {**valid, "mode": "diff"}, {**valid, "extra": 1},
+                        {**valid, "include_templateids": [11]}, {**valid, "include_templateids": ["0"]},
+                        {**valid, "include_templateids": ["01"]}, {**valid, "include_templateids": ["١"]},
+                        {**valid, "include_templateids": ["1"] * 1001}):
+            with self.subTest(invalid=invalid), self.assertRaises(Error):
+                settings({**legacy, "template_scope": invalid})
+        request = command({"id": "a" * 32, "operation": "preview_scope", "params": {"template_scope": valid}})
+        self.assertEqual(request["params"]["template_scope"]["include_templateids"], ["2", "11"])
+        with self.assertRaises(Error):
+            command({"id": "a" * 32, "operation": "preview_scope", "params": {"template_scope": valid, "push": True}})
+
+    def test_disabled_discovered_hosts_parents_cycles_and_unused_children(self):
+        for version in ("7.0.0", "7.4.15"):
+            with self.subTest(version=version):
+                api = self.api(version)
+                api.host.rows[0].update(status="1", flags="4")
+                api.template.rows[0]["parentTemplates"] = [{"templateid": "11"}, {"templateid": "11"}]
+                api.template.rows[1]["parentTemplates"] = [{"templateid": "12"}]
+                api.template.rows[2]["parentTemplates"] = [{"templateid": "10"}]
+                api.template.rows[3]["parentTemplates"] = [{"templateid": "10"}]  # unused child
+                exporter = Exporter({}, api)
+                selected, metadata = resolve(exporter.scope_graph(), [])
+                self.assertEqual(selected, {"10", "11", "12"})
+                self.assertEqual((metadata["total"], metadata["selected"], metadata["excluded"]), (9, 3, 6))
+                self.assertFalse(any("filter" in call or "monitored_hosts" in call for call in api.host.calls))
+                self.assertTrue(all("selectTemplates" not in call for call in api.template.calls))
+
+    def test_prototype_closure_only_on_relevant_parents_and_disabled_actions(self):
+        for version in ("7.0.0", "7.4.15"):
+            with self.subTest(version=version):
+                api = self.api(version)
+                api.hostprototype.rows = [
+                    {"hostid": "30", "parentHost": {"hostid": "1"}, "templates": [{"templateid": "11"}]},
+                    {"hostid": "31", "parentHost": {"hostid": "11"}, "templates": [{"templateid": "12"}]},
+                    {"hostid": "32", "parentHost": {"hostid": "12"}, "templates": [{"templateid": "13"}]},
+                    {"hostid": "33", "parentHost": {"hostid": "17"}, "templates": [{"templateid": "18"}]}]
+                api.action.rows[0].update(status="1", eventsource="1", operations=[
+                    {"operationtype": "6", "optemplate": [{"templateid": "14"}]},
+                    {"operationtype": "7", "optemplate": [{"templateid": "15"}]},
+                    {"operationtype": "13"}])
+                exporter = Exporter({}, api)
+                selected, _ = resolve(exporter.scope_graph(), ["16", "99"])
+                self.assertEqual(selected, {str(i) for i in range(10, 17)})
+                preview = exporter.preview_scope({"mode": "used", "include_templateids": ["16", "99"]})
+                self.assertEqual(preview["manual_included"], 1)
+                self.assertEqual(preview["missing_manual"], 1)
+                self.assertIsNotNone(preview["warning"])
+                self.assertNotIn("99", json.dumps(preview))
+                api.configuration.export.assert_not_called()
+
+    def test_malformed_and_unreadable_relations_fail_closed(self):
+        changes = [lambda a: a.host.rows[0].pop("parentTemplates"),
+                   lambda a: a.host.rows[0].update(parentTemplates={}),
+                   lambda a: a.host.rows[0].update(parentTemplates=[{}]),
+                   lambda a: a.host.rows[0].update(parentTemplates=[{"templateid": "99"}]),
+                   lambda a: a.template.rows[0].update(parentTemplates=[{"templateid": "99"}]),
+                   lambda a: a.template.rows[-1].update(parentTemplates=[{"templateid": "99"}]),
+                   lambda a: a.hostprototype.rows.append({"hostid": "30", "templates": []}),
+                   lambda a: a.hostprototype.rows.append({"hostid": "30", "parentHost": {"hostid": "99"}, "templates": []}),
+                   lambda a: a.action.rows[0].pop("operations"),
+                   lambda a: a.action.rows[0].update(operations=[{"operationtype": "6"}]),
+                   lambda a: a.action.rows[0].update(operations=[{"operationtype": "6", "optemplate": []}]),
+                   lambda a: a.action.rows[0].update(operations=[{"operationtype": "0", "optemplate": []}]),
+                   lambda a: a.action.rows[0].update(operations=[{"operationtype": "99"}]),
+                   lambda a: a.action.rows[0].update(recovery_operations=[{"operationtype": "6", "optemplate": [{"templateid": "10"}]}]),
+                   lambda a: a.template.rows[0].update(templateid="0"),
+                   lambda a: a.template.rows.append(copy.deepcopy(a.template.rows[0])),
+                   lambda a: setattr(a.hostprototype, "count_delta", 1)]
+        for change in changes:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                api = self.api()
+                change(api)
+                with self.assertRaises(Incomplete):
+                    Exporter({}, api).export(["templates"], Path(directory), scope=self.used)
+                self.assertFalse((Path(directory) / "manifest.json").exists())
+                api.configuration.export.assert_not_called()
+
+    def test_manual_root_contributes_parents_and_its_own_prototypes(self):
+        api = self.api()
+        api.host.rows = []
+        api.template.rows[1]["parentTemplates"] = [{"templateid": "12"}]
+        api.hostprototype.rows = [{"hostid": "30", "parentHost": {"hostid": "12"}, "templates": [{"templateid": "13"}]}]
+        selected, metadata = resolve(Exporter({}, api).scope_graph(), ["11", "11", "99"])
+        self.assertEqual(selected, {"11", "12", "13"})
+        self.assertEqual(metadata["missing_manual_templateids"], ["99"])
+        self.assertEqual(metadata["manual_included"], 1)
+
+    def test_invalid_inventory_count_cannot_verify_a_missing_manual_template(self):
+        for count in (True, None, {}, "-1", "١", "0", "99"):
+            with self.subTest(count=count):
+                api = self.api()
+                original = api.template.get
+                api.template.get = lambda **params: count if params.get("countOutput") else original(**params)
+                with self.assertRaises(Incomplete):
+                    Exporter({}, api).preview_scope({"mode": "used", "include_templateids": ["99"]})
+
+    def test_empty_verified_scope_exports_groups_only(self):
+        api = self.api()
+        api.host.rows = []
+        with tempfile.TemporaryDirectory() as directory:
+            coverage = Exporter({}, api).export(["templates"], Path(directory), scope=self.used)
+            self.assertEqual(coverage["templates"]["template_scope"]["selected"], 0)
+            self.assertEqual(coverage["templates"]["objects"], 1)
+            self.assertTrue((Path(directory) / "templates/template_groups.json").exists())
+            api.configuration.export.assert_not_called()
+        self.assertTrue(all(not any(v == [] for v in call.values()) for call in api.template.calls))
+
+    def test_used_exports_only_selected_keeps_native_validation_and_manifest(self):
+        for version in ("7.0.0", "7.4.15"):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                api = self.api(version)
+                exporter = Exporter({}, api)
+                exporter.export(["templates"], root / "a", scope=self.used)
+                self.assertEqual(api.configuration.export.call_args_list, [unittest.mock.call(format="json", options={"templates": ["10"]})])
+                self.assertTrue(api.item.calls)
+                self.assertTrue(api.action.calls)  # actions need not be an exported category
+                exporter.export(["templates"], root / "b", scope=self.used)
+                self.assertEqual(read_json(root / "a/manifest.json"), read_json(root / "b/manifest.json"))
+                api.item.count_delta = 1
+                with self.assertRaises(Incomplete):
+                    exporter.export(["templates"], root / "failed", scope=self.used)
+                self.assertFalse((root / "failed/manifest.json").exists())
+
+    def test_changes_during_export_are_detected_before_manifest(self):
+        changes = [lambda a: a.host.rows[0].update(parentTemplates=[]),
+                   lambda a: a.template.rows[1].update(parentTemplates=[{"templateid": "12"}]),
+                   lambda a: a.template.rows.append({"templateid": "99", "host": "new", "parentTemplates": []}),
+                   lambda a: a.hostprototype.rows.append({"hostid": "31", "parentHost": {"hostid": "1"}, "templates": []}),
+                   lambda a: a.action.rows[0].update(operations=[{"operationtype": "6", "optemplate": [{"templateid": "11"}]}])]
+        for change in changes:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                api = self.api()
+                def progress(category, state, result):
+                    if state == "Exported":
+                        change(api)
+                with self.assertRaises(Incomplete):
+                    Exporter({}, api).export(["templates"], Path(directory), progress, self.used)
+                self.assertFalse((Path(directory) / "manifest.json").exists())
+
+    def test_preview_rechecks_inventory_and_transport_is_not_missing_manual(self):
+        api = self.api()
+        original = api.host.get
+        calls = 0
+        def get(**params):
+            nonlocal calls
+            calls += 1
+            if calls == 5:
+                api.host.rows[0]["parentTemplates"] = []
+            return original(**params)
+        api.host.get = get
+        with self.assertRaises(Incomplete):
+            Exporter({}, api).preview_scope(self.used)
+        for failure, expected in ((ProcessingError(SENTINEL), Transient), (APIRequestError(SENTINEL), Error)):
+            api = self.api()
+            api.template.get = Mock(side_effect=failure)
+            with self.assertRaises(expected) as raised:
+                Exporter({}, api).preview_scope({"mode": "used", "include_templateids": ["99"]})
+            self.assertNotIn(SENTINEL, str(raised.exception))
+
+    def test_all_legacy_bytes_unchanged_and_permissions_are_conditional(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            api = self.api()
+            exporter = Exporter({}, api)
+            exporter.export(["templates"], root / "legacy")
+            exporter.export(["templates"], root / "all", scope={"mode": "all", "include_templateids": ["99"]})
+            self.assertEqual((root / "legacy/manifest.json").read_bytes(), (root / "all/manifest.json").read_bytes())
+            self.assertNotIn("template_scope", read_json(root / "all/manifest.json")["coverage"]["templates"])
+            self.assertEqual(api.action.calls, [])
+            exporter.check_permissions(["templates"])
+            self.assertEqual(api.hostprototype.calls, [])
+            exporter.check_permissions(["templates"], self.used)
+            self.assertTrue(api.hostprototype.calls)
+            self.assertTrue(api.action.calls)
 
 
 class CoreTests(unittest.TestCase):
@@ -498,6 +695,33 @@ class GitTests(unittest.TestCase):
                                        "-c", "commit.gpgsign=false", *args], cwd=cwd,
                                       stderr=subprocess.DEVNULL, text=True).strip()
 
+    def test_template_scope_all_used_all_history_and_noop(self):
+        api = ScopeTests.api()
+        exporter = Exporter({}, api)
+        stage_all = self.root / "all"
+        exporter.export(["templates"], stage_all)
+        first, changed = self.publisher.publish(stage_all)
+        self.assertTrue(changed)
+        stage_used = self.root / "used"
+        exporter.export(["templates"], stage_used, scope=ScopeTests.used)
+        second, changed = self.publisher.publish(stage_used)
+        self.assertTrue(changed)
+        files = self.git("ls-tree", "-r", "--name-only", "main", cwd=self.remote)
+        self.assertIn("gitkeeper/templates/10.json", files)
+        self.assertNotIn("gitkeeper/templates/11.json", files)
+        self.assertIn("gitkeeper/templates/11.json", self.git("ls-tree", "-r", "--name-only", first, cwd=self.remote))
+        same, changed = self.publisher.publish(stage_used)
+        self.assertEqual(same, second)
+        self.assertFalse(changed)
+        api.host.rows[0]["parentTemplates"] = [{"templateid": "99"}]
+        with self.assertRaises(Incomplete):
+            exporter.export(["templates"], self.root / "bad", scope=ScopeTests.used)
+        self.assertEqual(self.git("rev-parse", "main", cwd=self.remote), second)
+        third, changed = self.publisher.publish(stage_all)
+        self.assertTrue(changed)
+        self.assertEqual(self.git("rev-parse", third + "^", cwd=self.remote), second)
+        self.assertIn("gitkeeper/templates/11.json", self.git("ls-tree", "-r", "--name-only", "main", cwd=self.remote))
+
     def test_unchanged_snapshot_one_commit_and_real_changes_diff(self):
         api = FakeAPI()
         exporter = Exporter({}, api)
@@ -620,6 +844,54 @@ class WorkerTests(unittest.TestCase):
         self.install = self.root / "worker.json"
         atomic_json(self.install, {"state_dir": str(self.root), "client_id": "fixture"})
         self.worker = Worker(self.install)
+
+    @patch("gitkeeper.worker.Publisher")
+    def test_preview_queue_read_only_correlated_and_safe(self, publisher):
+        config = {"repository_id": 42, "categories": ["templates"], "interval": 4320,
+                  "template_scope": {"mode": "all", "include_templateids": []}, "next_sync": 9999999999}
+        atomic_json(self.worker.config_path, config)
+        self.worker.config = config
+        atomic_json(self.root / "private/zabbix.json", {"url": "https://example/api_jsonrpc.php", "token": TOKEN})
+        before = self.worker.config_path.read_bytes()
+        api = ScopeTests.api()
+        request_id = "c" * 32
+        atomic_json(self.root / "queue" / (request_id + ".json"), {"id": request_id, "operation": "preview_scope",
+            "params": {"template_scope": {"mode": "used", "include_templateids": ["11", "99"]}}})
+        states = []
+        original_flush = self.worker.flush
+        def flush():
+            states.append(copy.deepcopy(self.worker.status))
+            original_flush()
+        with patch("gitkeeper.worker.Exporter", return_value=Exporter({}, api)), patch.object(self.worker, "flush", side_effect=flush):
+            self.worker.drain()
+        preview = self.worker.status["scope_preview"]
+        self.assertEqual(preview["state"], "Completed")
+        self.assertEqual(preview["id"], request_id)
+        self.assertEqual(preview["summary"]["selected"], 2)
+        self.assertTrue(any(s.get("scope_preview", {}).get("state") == "Running" for s in states))
+        self.assertEqual(self.worker.config_path.read_bytes(), before)
+        api.configuration.export.assert_not_called()
+        publisher.assert_not_called()
+        public = self.worker.public.read_text()
+        self.assertNotIn(TOKEN, public)
+        self.assertNotIn(SENTINEL, public)
+        self.assertNotIn("missing_manual_templateids", public)
+        self.assertEqual(read_json(self.worker.public)["settings"]["template_scope"]["mode"], "all")
+        self.assertEqual(self.worker.status["last_result"]["state"], "Completed")
+
+    def test_failed_preview_keeps_settings_and_safe_error(self):
+        atomic_json(self.root / "private/zabbix.json", {"url": "https://example/api_jsonrpc.php", "token": TOKEN})
+        request_id = "d" * 32
+        atomic_json(self.worker.config_path, {"repository_id": 42})
+        before = self.worker.config_path.read_bytes()
+        atomic_json(self.root / "queue" / (request_id + ".json"), {"id": request_id, "operation": "preview_scope",
+            "params": {"template_scope": ScopeTests.used}})
+        with patch("gitkeeper.worker.Exporter", side_effect=RuntimeError(SENTINEL)):
+            self.worker.drain()
+        self.assertEqual(self.worker.status["scope_preview"]["state"], "Failed")
+        self.assertEqual(self.worker.status["last_result"]["id"], request_id)
+        self.assertEqual(self.worker.config_path.read_bytes(), before)
+        self.assertNotIn(SENTINEL, self.worker.public.read_text())
 
     def test_native_client_verifies_http_loopback_before_storing_token(self):
         calls = []

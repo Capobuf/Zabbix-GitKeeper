@@ -9,11 +9,8 @@ from zabbix_utils import APIRequestError, ProcessingError, ZabbixAPI
 
 from . import __version__
 from .policy import PolicyError, encode, sanitize
-from .storage import Error, Transient, api_url
-
-
-class Incomplete(Error):
-    pass
+from .scope import Incomplete, object_id, public_summary, relations, resolve
+from .storage import Error, Transient, api_url, template_scope
 
 
 class Exporter:
@@ -34,7 +31,7 @@ class Exporter:
         except APIRequestError:
             raise Error("Zabbix rejected API authentication or the Super admin probe; verify the token and role.") from None
 
-    def check_permissions(self, categories: list[str]) -> None:
+    def check_permissions(self, categories: list[str], scope=None) -> None:
         methods = {"hosts": ("host", "hostgroup", "item", "trigger", "discoveryrule", "itemprototype", "triggerprototype"),
                    "templates": ("template", "templategroup", "item", "trigger", "discoveryrule", "itemprototype", "triggerprototype"),
                    "actions": ("action",), "media_types": ("mediatype",), "users": ("user", "usergroup", "role")}
@@ -44,6 +41,9 @@ class Exporter:
                     getattr(self.api, method).get(countOutput=True)
                 if self.series == "7.4" and category in ("hosts", "templates"):
                     self.api.discoveryruleprototype.get(countOutput=True)
+            if "templates" in categories and template_scope(scope)["mode"] == "used":
+                for method in ("host", "hostprototype", "action"):
+                    getattr(self.api, method).get(countOutput=True)
         except APIRequestError:
             raise Error("Zabbix denied a required read method. Check the token owner's API role permissions.") from None
         except ProcessingError:
@@ -52,15 +52,60 @@ class Exporter:
     def enumerate(self, method: str, id_field: str, **params) -> list:
         get = getattr(self.api, method).get
         scope = {k: v for k, v in params.items() if k != "output" and not k.startswith("select")}
-        before = int(get(countOutput=True, **scope))
+        def count():
+            value = get(countOutput=True, **scope)
+            if isinstance(value, bool) or not isinstance(value, (str, int)) or not str(value).isascii() or not str(value).isdigit():
+                raise Incomplete("Malformed enumeration count.")
+            return int(value)
+        before = count()
         rows = get(**params)
-        after = int(get(countOutput=True, **scope))
+        after = count()
         if not isinstance(rows, list) or len(rows) != before or before != after:
             raise Incomplete("Enumeration incomplete or changed during export; retry when configuration is stable.")
-        ids = [str(r[id_field]) for r in rows]
-        if len(set(ids)) != len(ids) or any(not i.isdigit() for i in ids):
+        if any(not isinstance(r, dict) or id_field not in r for r in rows):
+            raise Incomplete("Missing object IDs in enumeration.")
+        ids = [object_id(r[id_field]) for r in rows]
+        if len(set(ids)) != len(ids):
             raise Incomplete("Invalid or duplicated object IDs in enumeration.")
         return sorted(rows, key=lambda r: int(r[id_field]))
+
+    def scope_inventory(self, used=False):
+        params = {"selectParentTemplates": ["templateid"]} if used else {}
+        rows = self.enumerate("template", "templateid", output=["templateid", "host"], **params)
+        if any(not isinstance(row.get("host"), str) or not row["host"] for row in rows):
+            raise Incomplete("Malformed template inventory.")
+        return rows
+
+    def scope_graph(self):
+        templates = self.scope_inventory(True)
+        hosts = self.enumerate("host", "hostid", output=["hostid"], selectParentTemplates=["templateid"])
+        prototypes = self.enumerate("hostprototype", "hostid", output=["hostid"],
+                                    selectParentHost=["hostid"], selectTemplates=["templateid"])
+        actions = self.enumerate("action", "actionid", output=["actionid"],
+                                 selectOperations=["operationtype", "optemplate"],
+                                 selectRecoveryOperations=["operationtype"], selectUpdateOperations=["operationtype"])
+        return relations(templates, hosts, prototypes, actions)
+
+    def preview_scope(self, scope):
+        scope = template_scope(scope)
+        try:
+            # The verified reads below probe exactly the preview's required methods.
+            if scope["mode"] == "used":
+                graph = self.scope_graph()
+                _, metadata = resolve(graph, scope["include_templateids"])
+                if graph != self.scope_graph():
+                    raise Incomplete("Template inventory or relations changed during scope calculation.")
+            else:
+                rows = self.scope_inventory()
+                if rows != self.scope_inventory():
+                    raise Incomplete("Template inventory changed during scope calculation.")
+                metadata = {"mode": "all", "total": len(rows), "selected": len(rows), "excluded": 0,
+                            "manual_included": 0, "missing_manual_templateids": []}
+            return public_summary(metadata)
+        except APIRequestError:
+            raise Error("Zabbix denied template scope reads; check API permissions.") from None
+        except ProcessingError:
+            raise Transient("Cannot reach Zabbix while calculating template scope.") from None
 
     def verify_native(self, host_id: str, obj: dict, data: dict) -> None:
         scope = {"hostids": [host_id], "inherited": False}
@@ -95,10 +140,15 @@ class Exporter:
             if Counter(r["description"] for r in expected_triggers) - Counter(r["name"] for r in prototypes):
                 raise Incomplete("Native trigger prototype coverage does not match API enumeration.")
 
-    def native(self, category: str, stage: Path, excluded: set, progress=None) -> int:
+    def native(self, category: str, stage: Path, excluded: set, progress=None, selected=None, inventory=None) -> int:
         family, method, id_field = ("hosts", "host", "hostid") if category == "hosts" else (
             "templates", "template", "templateid")
-        rows = self.enumerate(method, id_field, output=[id_field, "host"])
+        rows = inventory if inventory is not None else self.enumerate(method, id_field, output=[id_field, "host"])
+        inventory = rows
+        if selected is not None:
+            if selected - {r[id_field] for r in rows}:
+                raise Incomplete("Selected templates disappeared before native export.")
+            rows = [r for r in rows if r[id_field] in selected]
         if progress:
             progress(category, "Running", {"processed": 0, "total": len(rows)})
         groups = (("hostgroup", "groupid", "host_groups"),) if category == "hosts" else (
@@ -125,7 +175,7 @@ class Exporter:
                 progress(category, "Running", {"processed": processed, "total": len(rows),
                                                "excluded_fields": sorted(excluded)})
         again = self.enumerate(method, id_field, output=[id_field, "host"])
-        if rows != again:
+        if [(r[id_field], r["host"]) for r in inventory] != [(r[id_field], r["host"]) for r in again]:
             raise Incomplete("Object enumeration changed during native export.")
         return len(rows) + group_count
 
@@ -167,17 +217,32 @@ class Exporter:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(encode(value), encoding="utf-8", newline="\n")
 
-    def export(self, categories: list[str], stage: Path, progress=None) -> dict:
+    def export(self, categories: list[str], stage: Path, progress=None, scope=None) -> dict:
         coverage = {}
+        graph = None
+        selected = None
+        scope = template_scope(scope)
         for category in categories:
             excluded = set()
             if progress:
                 progress(category, "Running", {})
             try:
-                count = self.native(category, stage, excluded, progress) if category in ("hosts", "templates") else (
-                    self.collected(category, stage, excluded))
+                if category == "templates" and scope["mode"] == "used":
+                    graph = self.scope_graph()
+                    selected, metadata = resolve(graph, scope["include_templateids"])
+                if category in ("hosts", "templates"):
+                    inventory = None
+                    if category == "templates" and graph is not None:
+                        inventory = [{"templateid": i, "host": name} for i, name in graph["inventory"]]
+                    count = self.native(category, stage, excluded, progress,
+                                        selected if category == "templates" else None, inventory)
+                else:
+                    count = self.collected(category, stage, excluded)
                 coverage[category] = {"objects": count, "enumeration": "verified", "state": "exported",
                                       "excluded_fields": sorted(excluded)}
+                if category == "templates" and graph is not None:
+                    coverage[category]["template_scope"] = metadata
+                    coverage[category]["template_groups"] = count - len(selected)
             except Exception as exc:
                 if progress:
                     progress(category, "Incomplete" if isinstance(exc, Incomplete) else "Failed", {})
@@ -189,7 +254,26 @@ class Exporter:
                     raise Transient(f"Zabbix transport failed while exporting {category}; retry later.") from None
                 raise Error(f"Zabbix export failed for {category}. Check API access and version policy.") from None
             if progress:
-                progress(category, "Exported", coverage[category])
+                safe = dict(coverage[category])
+                if "template_scope" in safe:
+                    safe["template_scope"] = public_summary(safe["template_scope"])
+                progress(category, "Exported", safe)
+        if graph is not None:
+            try:
+                if graph != self.scope_graph():
+                    raise Incomplete("Template inventory or relations changed during export; snapshot not published.")
+            except APIRequestError:
+                if progress:
+                    progress("templates", "Failed", {})
+                raise Error("Zabbix denied template scope verification; snapshot not published.") from None
+            except ProcessingError:
+                if progress:
+                    progress("templates", "Failed", {})
+                raise Transient("Cannot verify template scope before publication.") from None
+            except Incomplete:
+                if progress:
+                    progress("templates", "Incomplete", {})
+                raise
         checksums = {str(p.relative_to(stage)).replace("\\", "/"): hashlib.sha256(p.read_bytes()).hexdigest()
                      for p in sorted(stage.rglob("*.json"))}
         manifest = {"schema": 2, "gitkeeper_version": __version__, "zabbix_version": self.version,

@@ -42,6 +42,10 @@ $ui = [
     'default_interval' => Queue::DEFAULT_INTERVAL, 'copied' => _('Copiato'),
     'copy_failed' => _('Seleziona e copia manualmente.'), 'unknown_result' => _('Esito della richiesta non più disponibile; consulta gli stati persistenti delle connessioni e della sincronizzazione.'),
     'change_app' => _('Cambiare App? L’autorizzazione GitHub locale e la scelta del repository saranno rimosse e la pianificazione sospesa. App e repository su GitHub rimangono invariati.'),
+    'change_scope' => _('Passare a Solo utilizzati? Dopo una sincronizzazione riuscita, i file dei template esclusi scompariranno dalla revisione Git corrente. La cronologia precedente rimane invariata.'),
+    'preview_counts' => _('Template trovati: {total}; inclusi: {selected}; esclusi: {excluded}; inclusioni manuali effettive: {manual_included}; manuali non più presenti: {missing_manual}.'),
+    'preview_note' => _('Anteprima in sola lettura delle scelte correnti. Il perimetro viene ricalcolato durante la sincronizzazione.'),
+    'scope_missing' => _('Avviso: le inclusioni manuali non più presenti nell’inventario verificato sono state ignorate.'),
     'http' => _('HTTP trasmette il token senza cifratura. Per un endpoint locale usa, quando verificato, l’indirizzo loopback.'),
     'category_states' => ['Running' => _('In elaborazione'), 'Completed' => _('Elaborata'),
         'exported' => _('Elaborata'), 'Exported' => _('Elaborata'),
@@ -223,6 +227,26 @@ foreach ($labels as $category => $label) {
         ->setEnabled(in_array($category, $available, true)));
 }
 $row($configuration, _('Categorie'), $checks);
+$scope_mode = $settings['template_scope']['mode'] ?? (!empty($settings['categories']) ? 'all' : 'used');
+$scope_grid = new CFormGrid();
+$row($scope_grid, _('Modalità'), (new CSelect('template_mode'))->setId('gitkeeper-template-mode')
+    ->setFocusableElementId('gitkeeper-template-mode-focus')->setValue($scope_mode)
+    ->addOptions([new CSelectOption('used', _('Solo utilizzati')), new CSelectOption('all', _('Tutti'))]),
+    'gitkeeper-template-mode-focus');
+$manual = (new CMultiSelect([
+    'name' => 'include_templateids[]', 'object_name' => 'templates', 'data' => $data['manual_templates'] ?? [],
+    'popup' => ['parameters' => ['srctbl' => 'templates', 'srcfld1' => 'hostid', 'srcfld2' => 'host',
+        'dstfrm' => 'gitkeeper-configuration', 'dstfld1' => 'include_templateids_']]
+]))->setWidth(ZBX_TEXTAREA_STANDARD_WIDTH);
+$scope_grid->addItem([(new CLabel(_('Inclusioni manuali'), 'include_templateids__ms'))->setId('gitkeeper-template-manual-label'),
+    (new CFormField($manual))->setId('gitkeeper-template-manual')]);
+$scope_grid->addItem(new CFormField([
+    $submit('preview_scope', _('Anteprima perimetro'), $worker_ready && $api_ready, true)
+        ->setAttribute('formnovalidate', 'formnovalidate'),
+    $span('scope-preview')->setAttribute('role', 'status'), $paragraph($ui['preview_note']),
+    $paragraph(_('Sono inclusi i template collegati agli host, anche disabilitati o scoperti, alle azioni e ai prototype pertinenti, più le dipendenze e le inclusioni manuali. I gruppi template restano completi. I file esclusi vengono rimossi dalla revisione Git corrente dopo una sincronizzazione riuscita; la cronologia resta invariata.'))
+]));
+$configuration->addItem(new CFormField(new CFormFieldsetCollapsible(_('Template da versionare'), new CFormField($scope_grid))));
 $saved_interval = $settings['interval'] ?? Queue::DEFAULT_INTERVAL;
 $custom_interval = !in_array($saved_interval, Queue::INTERVALS, true);
 $interval = (new CSelect('interval'))->setId('gitkeeper-interval')->setFocusableElementId('gitkeeper-interval-focus')
@@ -247,7 +271,7 @@ $custom_field = (new CFormField([$duration, $paragraph(_('Intervallo minimo: un 
     ->setId('gitkeeper-custom-interval')->addClass(CFormField::ZBX_STYLE_FORM_FIELD_OFFSET_1);
 if (!$custom_interval) { $custom_field->setAttribute('hidden', 'hidden'); }
 $configuration->addItem($custom_field);
-$configuration_form = $form('configuration')->addItem(
+$configuration_form = $form('configuration')->setName('gitkeeper-configuration')->addItem(
     new CVar('repository_id', $settings['repository_id'] ?? 0, 'gitkeeper-saved-repository'))
     ->addItem($configuration)->addItem($paragraph(_('Sono versionati i dati leggibili secondo la policy corrente sui dati riservati; consulta i campi esclusi. Il ripristino completo dell’istanza e il disaster recovery non sono disponibili.')))
     ->addItem(makeFormFooter($submit('save', _('Salva e sincronizza'), $sync['can_save'])));
@@ -285,7 +309,8 @@ $overview = [
         && !in_array($sync['state'], ['Queued', 'Saving', 'Running', 'Publishing'], true)))),
     $span('sync-feedback', $sync['message'])->setAttribute('role', 'status')->setAttribute('aria-live', 'polite'),
     (new CList())->setId('gitkeeper-sync-requirements'), $span('worker-warning')->setAttribute('role', 'status'),
-    $wizard, $operational, $paragraph(_('Le categorie elaborate diventano uno snapshot soltanto dopo la pubblicazione riuscita.')), $table, $excluded
+    $wizard, $operational, $paragraph(_('Le categorie elaborate diventano uno snapshot soltanto dopo la pubblicazione riuscita.')),
+    $table, $span('scope-summary')->setAttribute('role', 'status'), $excluded
 ];
 $connections = (new CDiv($setup['operational'] ? array_slice($steps, 0, 4) : []))->setId('gitkeeper-settings-connections');
 $sync_settings = (new CDiv($setup['operational'] ? $steps[4] : []))->setId('gitkeeper-settings-sync');

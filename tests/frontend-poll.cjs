@@ -15,6 +15,9 @@ async function fixture(initial = {}) {
     ui.default_interval = 4320;
     ui.intervals = [5, 15, 30, 60, 1440, 4320];
     ui.max_interval = 2147483647;
+    ui.change_scope = 'Excluded template files leave the current revision; Git history remains.';
+    ui.preview_counts = 'Found {total}; selected {selected}; excluded {excluded}; manual {manual_included}; missing {missing_manual}';
+    ui.scope_missing = 'Missing manual templates were ignored after inventory verification.';
     class Element {
         constructor(id = '', tag = 'SPAN') {
             this.id = id; this.tagName = tag; this.dataset = {}; this.children = []; this.listeners = new Map();
@@ -50,7 +53,7 @@ async function fixture(initial = {}) {
     const root = new Element('gitkeeper', 'DIV');
     root.dataset = {ui: JSON.stringify(ui), requestId: '', apiRequest: '', syncRequest: '', operation: ''};
     const forms = new Map();
-    for (const op of ['sync', 'save', 'set_github_app', 'connect', 'repositories', 'test_github',
+    for (const op of ['sync', 'save', 'preview_scope', 'set_github_app', 'connect', 'repositories', 'test_github',
         'create_repository', 'select_repository', 'create_zabbix_token', 'set_zabbix', 'clear_zabbix', 'disconnect']) {
         const form = new Element('form-' + op, 'FORM');
         forms.set(op, form);
@@ -63,7 +66,12 @@ async function fixture(initial = {}) {
         'destination', 'summary-repository', 'commit', 'saved-repository', 'category-results', 'excluded',
         'sync-requirements', 'wizard', 'operational', 'setup-link', 'settings-sync', 'settings-connections',
         'settings-app', 'app-settings-link', 'app-config', 'app-organization', 'app-creation', 'app-creation-guide', 'register-app', 'api-url-warning',
-        'copy-result', 'bootstrap-url', 'api-url', 'bootstrap-tls', 'api-tls']) new Element('gitkeeper-' + id);
+        'copy-result', 'bootstrap-url', 'api-url', 'bootstrap-tls', 'api-tls', 'scope-preview', 'scope-summary', 'template-manual',
+        'template-manual-label']) new Element('gitkeeper-' + id);
+    const templateMode = new Element('gitkeeper-template-mode', 'Z-SELECT');
+    templateMode.value = initial.settings?.template_scope?.mode ?? (initial.settings?.categories ? 'all' : 'used');
+    const manual = new Element('include_templateids_', 'DIV');
+    manual.value = initial.settings?.template_scope?.include_templateids ?? [];
     get('app-config').dataset.registrationUrl = 'https://github.com/settings/apps/new?contents=write&public=false';
     for (let index = 0; index < 5; index++) {
         const step = new Element('gitkeeper-step-' + index, 'DETAILS');
@@ -92,14 +100,28 @@ async function fixture(initial = {}) {
         synchronization: {state: 'Incomplete', label: 'Incomplete', message: 'Finish setup', ready: false,
             can_save: false, missing: [['Worker absent', 'Install', 'gitkeeper-step-0']]}, ...initial};
     root.dataset.status = JSON.stringify(state);
-    let responseType = 'json'; let calls = 0; let pendingFetch;
+    let responseType = 'json'; let calls = 0; let pendingFetch; let posts = [];
     const timers = new Map(); let nextTimer = 0;
     const window = {location: {href: 'https://zabbix.example/zabbix/zabbix.php', reload() { throw new Error('Automatic page reload'); }},
         confirm: () => true, listeners: new Map(), addEventListener(type, callback) { this.listeners.set(type, callback); }};
-    const context = vm.createContext({document, window, URL, Date, AbortController,
+    class FormData {
+        constructor(form) {
+            this.entries = form ? [['csrf_token', 'fixture-csrf'], ['template_mode', templateMode.value],
+                ...manual.value.map(id => ['include_templateids[]', id]), ['interval', 'invalid'], ['categories[]', 'hosts']] : [];
+        }
+        append(key, value) { this.entries.push([key, value]); }
+        set(key, value) { this.entries = this.entries.filter(([name]) => name !== key); this.append(key, value); }
+        [Symbol.iterator]() { return this.entries[Symbol.iterator](); }
+    }
+    const context = vm.createContext({document, window, URL, Date, AbortController, FormData,
         setTimeout: (callback, delay) => { timers.set(++nextTimer, {callback, delay}); return nextTimer; },
         clearTimeout: id => timers.delete(id), writeTextClipboard: async () => {},
-        fetch: async url => {
+        fetch: async (url, options) => {
+            if (options.method === 'POST') {
+                posts.push([...options.body]);
+                return {ok: true, status: 200, redirected: false,
+                    text: async () => JSON.stringify({request_id: 'e'.repeat(32), error: null})};
+            }
             calls++; assert.match(url, /action=gitkeeper.status/);
             if (pendingFetch) await pendingFetch;
             if (responseType === 'offline') throw new Error('Network');
@@ -112,7 +134,7 @@ async function fixture(initial = {}) {
         const [id, item] = [...timers].find(([, item]) => item.delay !== 15000) ?? [];
         assert.ok(item, 'One next poll must be scheduled'); timers.delete(id); await item.callback();
     };
-    return {get, root, document, window, forms, ui, poll, timers, client, owner,
+    return {get, root, document, window, forms, ui, poll, timers, client, owner, manual, posts,
         get calls() { return calls; }, get state() { return state; }, set state(value) { state = value; },
         set responseType(value) { responseType = value; }, set pendingFetch(value) { pendingFetch = value; }};
 }
@@ -240,6 +262,65 @@ async function main() {
     assert.equal(form.children.at(-1).name, 'operation'); assert.equal(form.children.at(-1).value, 'sync');
     form.listeners.get('submit')({submitter: button, preventDefault() { prevented = true; }});
     assert.equal(prevented, true, 'Duplicate submission must be prevented');
+    const preview = await fixture({zabbix_configured: true,
+        settings: {categories: ['templates'], interval: 4320, template_scope: {mode: 'all', include_templateids: ['10']}}});
+    assert.equal(preview.get('template-mode').value, 'all', 'Saved all mode must be retained');
+    preview.get('template-mode').value = 'used'; preview.manual.value = ['11', '12'];
+    preview.root.listeners.get('change')({target: preview.get('template-mode')});
+    preview.get('interval').value = 30;
+    preview.root.listeners.get('change')({target: preview.get('interval')});
+    assert.equal(preview.get('template-manual').hidden, false);
+    const previewForm = preview.forms.get('preview_scope');
+    const previewButton = preview.get('submit-preview_scope');
+    let releaseOldPoll;
+    preview.pendingFetch = new Promise(resolve => { releaseOldPoll = resolve; });
+    const oldPreviewPoll = preview.poll();
+    let previewPrevented = false;
+    await previewForm.listeners.get('submit')({submitter: previewButton, preventDefault() { previewPrevented = true; }});
+    assert.equal(previewPrevented, true, 'Preview must remain on the current page');
+    assert.equal(previewForm.dataset.submitting, undefined, 'Preview must not freeze the settings form');
+    assert.equal(preview.posts.length, 1);
+    const params = Object.fromEntries(preview.posts[0]);
+    assert.equal(params.csrf_token, 'fixture-csrf');
+    assert.equal(params.operation, 'preview_scope');
+    assert.equal(params.template_mode, 'used');
+    assert.equal(params.interval, undefined, 'Unrelated invalid form drafts must not block preview');
+    assert.deepEqual(preview.posts[0].filter(([key]) => key === 'include_templateids[]').map(([, value]) => value), ['11', '12']);
+    assert.equal(preview.get('scope-preview').textContent, preview.ui.queued);
+    releaseOldPoll(); await oldPreviewPoll; preview.pendingFetch = null;
+    assert.equal(preview.get('scope-preview').textContent, preview.ui.queued, 'An older poll must not replace preview correlation');
+    assert.equal(previewButton.disabled, true, 'An older poll must not enable duplicate preview submissions');
+    await previewForm.listeners.get('submit')({submitter: previewButton, preventDefault() {}});
+    assert.equal(preview.posts.length, 1, 'Do not duplicate a queued preview');
+    preview.state.request_pending = true; await preview.poll();
+    assert.equal(preview.get('scope-preview').textContent, preview.ui.queued);
+    preview.state.request_pending = false;
+    preview.state.current_request = {id: 'e'.repeat(32), operation: 'preview_scope'};
+    preview.state.scope_preview = {id: 'e'.repeat(32), state: 'Running'}; await preview.poll();
+    assert.equal(preview.get('scope-preview').textContent, preview.ui.running);
+    preview.state.current_request = null;
+    preview.state.scope_preview = {id: 'e'.repeat(32), state: 'Completed', summary: {
+        total: 9, selected: 3, excluded: 6, manual_included: 2, missing_manual: 0, warning: null}};
+    preview.state.last_result = {id: 'e'.repeat(32), operation: 'preview_scope', state: 'Completed'};
+    await preview.poll();
+    assert.equal(preview.get('scope-preview').textContent, 'Found 9; selected 3; excluded 6; manual 2; missing 0');
+    assert.equal(preview.get('template-mode').value, 'used');
+    assert.deepEqual(preview.manual.value, ['11', '12']);
+    assert.equal(preview.get('interval').value, 30);
+    preview.state.scope_preview = {id: 'other', state: 'Completed', summary: {total: 999}}; await preview.poll();
+    assert.equal(preview.get('scope-preview').textContent, preview.ui.unknown_result, 'Do not display another request result');
+    preview.state.scope_preview = {id: 'e'.repeat(32), state: 'Failed', error: 'Scope unavailable'}; await preview.poll();
+    assert.equal(preview.get('scope-preview').textContent, 'Scope unavailable');
+    preview.window.confirm = () => false;
+    preview.get('category-templates').checked = true;
+    let canceled = false;
+    const saveForm = preview.forms.get('save');
+    await saveForm.listeners.get('submit')({submitter: preview.get('submit-save'), preventDefault() { canceled = true; }});
+    assert.equal(canceled, true, 'all to used must ask for confirmation');
+    assert.equal(saveForm.dataset.submitting, undefined);
+    preview.window.confirm = () => true;
+    await saveForm.listeners.get('submit')({submitter: preview.get('submit-save'), preventDefault() {}});
+    assert.ok(saveForm.children.some(item => item.name === 'confirm_template_scope' && item.value === '1'));
     console.log('Frontend wizard, device states, repositories, live progress, input preservation, visibility, session and submission checks passed.');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

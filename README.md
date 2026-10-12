@@ -69,6 +69,34 @@ Each installation must use its own registered GitHub App. Save its **Client ID**
 
 ### 4. Choose what to export
 
+Implemented template scope is configured in **Cosa sincronizzare > Template da versionare**:
+**Solo utilizzati** (`used`) or **Tutti** (`all`). Existing settings without `template_scope`
+keep `all`; only a new configuration proposes `used`. Other selected categories remain complete:
+hosts, host groups, template groups, actions, media types, users, user groups and roles.
+
+`used` includes templates linked to every configured host (including disabled and LLD-discovered
+hosts), templates referenced by action link/unlink operations (including disabled actions, even
+when actions are not exported), manual selections, and their transitive parent dependencies.
+Host prototypes contribute template links only when their parent is a configured host or an
+already included template. This closure repeats until stable; unused child templates are excluded.
+Use the native searchable multiselect to retain additional templates, including work in progress.
+An unused template that was edited cannot reliably be identified as user-managed from API data:
+Git diffs only compare objects already inside the selected snapshot scope.
+
+**Anteprima perimetro** uses the current unsaved choices and the existing worker queue. It shows
+Queued/Running/Completed/Failed and verified counts on the same page, without saving settings,
+exporting templates or publishing Git. Synchronization recalculates the scope. Missing manual
+IDs are ignored with a specific warning only after a complete inventory is verified; unreadable
+automatic references, malformed data, API failures or detected relation changes stop publication.
+Intentional exclusion is therefore distinct from an incomplete export.
+
+Changing an existing configuration from `all` to `used` requires confirmation: excluded template
+files disappear from the current Git revision only after successful synchronization. Earlier
+commits remain accessible, and switching back to `all` restores currently existing templates.
+Schema 2, native template files and the readable-credentials policy remain unchanged. Snapshots
+can contain plaintext credentials. See [coverage](docs/coverage.md) and [validation](docs/validation.md)
+for fixture evidence, the live preview/native export checks on 7.4.15, and remaining acceptance checks.
+
 The page offers **All supported categories**, plus independent checkboxes for:
 
 | Category | Expected contents |

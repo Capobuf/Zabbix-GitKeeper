@@ -12,6 +12,7 @@ from pathlib import Path
 from .exporter import Exporter, Incomplete
 from .git import Publisher
 from .github import GitHub, Reconnect
+from .scope import public_summary
 from .storage import CATEGORIES, Error, Transient, atomic_json, command, process_lock, read_json
 
 
@@ -80,12 +81,15 @@ class Worker:
             self.flush()
         with tempfile.TemporaryDirectory(prefix="export-", dir=self.private) as directory:
             stage = Path(directory)
-            coverage = exporter.export(self.config["categories"], stage, progress)
+            coverage = exporter.export(self.config["categories"], stage, progress, self.config.get("template_scope"))
             self.status["sync_phase"] = "Publishing"
             self.flush()
             repo = self.github.repository(self.config["repository_id"])
             commit, changed = Publisher(self.private / "repositories", repo, self.github.token()).publish(stage)
         now = time.time()
+        for result in coverage.values():
+            if "template_scope" in result:
+                result["template_scope"] = public_summary(result["template_scope"])
         self.config.update(next_sync=now + self.config["interval"] * 60, retry_count=0, sync_pending=False)
         self.status.update(state="Completed", last_success=now, last_commit=commit, changed=changed,
                            repository=repo, categories=coverage, error=None, github="Ready", reconnect=False)
@@ -105,7 +109,17 @@ class Worker:
     def execute(self, request: dict) -> None:
         op, params = request["operation"], request["params"]
         self.status["error"] = None
-        if op == "set_github_app":
+        if op == "preview_scope":
+            self.status["scope_preview"] = {"id": request["id"], "state": "Running", "error": None}
+            self.flush()
+            if not (self.private / "zabbix.json").exists():
+                raise Error("Configure and verify the Zabbix API token first.")
+            summary = Exporter(read_json(self.private / "zabbix.json")).preview_scope(params["template_scope"])
+            self.status["scope_preview"].update(state="Completed", summary=summary)
+            self.status["state"] = "Completed"
+            self.flush()
+            return  # Read-only: do not rewrite settings or schedule a snapshot.
+        elif op == "set_github_app":
             if params["client_id"] != self.github.client_id:
                 # Credentials issued to another App must never be reused.
                 self.github.disconnect()
@@ -147,7 +161,7 @@ class Worker:
                 credentials["verify_tls"] = params["verify_tls"]
             exporter = Exporter(credentials)
             # Verify the API role here; selected collectors are validated on Save & Sync.
-            exporter.check_permissions(self.config.get("categories", list(CATEGORIES)))
+            exporter.check_permissions(self.config.get("categories", list(CATEGORIES)), self.config.get("template_scope"))
             atomic_json(self.private / "zabbix.json", credentials)
             self.status.update(zabbix_version=exporter.version, state="Ready")
             self.status["zabbix_verification"]["state"] = "Verified"
@@ -162,7 +176,7 @@ class Worker:
             repo = self.github.repository(selected["repository_id"])
             if not (self.private / "zabbix.json").exists():
                 raise Error("Configure and verify the Zabbix API token first.")
-            Exporter(read_json(self.private / "zabbix.json")).check_permissions(selected["categories"])
+            Exporter(read_json(self.private / "zabbix.json")).check_permissions(selected["categories"], selected.get("template_scope"))
             self.config = {**selected, "sync_pending": True, "retry_count": 0, "sync_request_id": request["id"]}
             self.status.update(state="Queued", repository=repo)
         elif op == "sync":
@@ -207,6 +221,9 @@ class Worker:
                 verification = self.status.get("zabbix_verification", {})
                 if verification.get("id") == request_id and verification.get("state") == "Running":
                     verification.update(state="Failed", error=self.status["error"])
+                preview = self.status.get("scope_preview", {})
+                if preview.get("id") == request_id and preview.get("state") == "Running":
+                    preview.update(state="Failed", error=self.status["error"])
             finally:
                 claimed.unlink(missing_ok=True)
                 self.status["last_request"] = request_id

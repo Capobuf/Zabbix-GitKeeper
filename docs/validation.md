@@ -488,3 +488,126 @@ A separate browser tab verified the preset/custom switch and native fields on Za
 A zero duration produced a validation error; a draft of 1 day, 2 hours and 30 minutes was valid.
 No settings were submitted or synchronization queued during this browser check. Custom save handoff
 and scheduling were exercised by isolated controller and worker tests, not by changing the live schedule.
+
+## Smart Template Scope — 2026-10-12 (local implementation, no live deployment)
+
+Starting HEAD was `bb808aa28acea2e3ed2a738217ddc30862f6acfe`, matching the supplied analysis.
+The working tree was clean. This change implements `all`/`used`, manual selections, deterministic
+scope metadata in schema 2, bulk dependency resolution and non-destructive queued previews.
+It preserves existing settings without a scope as `all` and preserves legacy `all` snapshot bytes.
+During the initial local implementation, no production installation, settings, monitoring configuration
+or backup repository was modified and no live template totals were measured. The subsequent authorized
+server update and live measurements are recorded below.
+
+Local evidence:
+
+Checks ran on Windows with Python 3.12.10, PHP 8.3.10 and the available native Git/Node tools.
+The workflow's Linux/Python 3.10 environment was not exercised locally.
+
+- **62 Python tests: 61 passed, one POSIX lock test skipped on Windows.** The same existing fixture
+  suite now covers direct links from disabled/discovered hosts, parent chains/cycles, unused children,
+  pertinent versus unrelated prototypes, discovery action link/unlink operations including disabled
+  actions, actions outside selected export categories, manual roots/dependencies/prototypes, verified
+  missing manual IDs, malformed and partial inventories/relations, changes during calculation/export,
+  empty verified selections, native verification and deterministic legacy/selective manifests.
+- Real local temporary bare Git repositories verify `all → used → all`, no commit for an identical
+  selective snapshot, removal only from the current tree, access to previous commits and preservation
+  of the valid destination after export/push failure. These are local fixtures, not GitHub acceptance.
+- `php tests/frontend.php` passes controller/queue validation, native CSRF retention and Super admin
+  contracts, preview handoff/JSON layout/correlation, missing versus confirmed scope transitions and
+  normalized saved IDs. PHP lint passes for every frontend/test PHP file.
+- `node tests/frontend-poll.cjs` passes Queued/Running/Completed/Failed preview display, request
+  correlation, CSRF-bearing POSTs, duplicate protection, current unsaved scope choices, preservation
+  of manual/interval edits and save confirmation, alongside the prior sync/polling regressions.
+- Ruff (worker, tests and live diagnostic), compileall, native Bash syntax checks, ShellCheck 0.11.0
+  and worker sdist/wheel build pass. No new runtime or frontend dependency was added.
+
+Both 7.0 and 7.4 official sources were reviewed for `selectParentTemplates` direction, prototype
+`parentHost`/`templates`, action operation types/selectors and `CMultiSelect` popup parameters.
+The [coverage references](coverage.md#template-scope-coverage-70-and-74) identify those sources.
+Versioned fixture cases exercise both series; this does **not** certify a live 7.0/7.4 server or
+native selector rendering. Prior live evidence above predates Smart Template Scope.
+
+At the end of local verification, remaining checks were Linux POSIX lock and disposable root installer smoke test; live preview and
+native multiselect/save/queue behavior on authorized test instances in each target series. WSL cannot
+start in this workspace because its distro disk is missing, and the Docker daemon is unavailable.
+The complete Linux CI workflow and installer smoke test were therefore not run here. The existing
+smoke script is restricted to disposable GitHub Actions runners and must not run on production.
+
+To validate scope in read-only mode against an authorized test instance, substitute its actual
+endpoint and Super admin username. This prompts for an ephemeral login, makes no native exports,
+writes no settings and performs no Git operation:
+
+```sh
+python scripts/check-live-export.py --url https://TEST-ZABBIX/api_jsonrpc.php --user TEST-ADMIN --template-mode used --preview-scope
+```
+
+Use `--include-templateid ID` repeatedly to check manual roots. For subsequent native checks, omit
+`--preview-scope` and use `--categories templates --template-mode used`: the temporary snapshot is
+deleted and no Git push is performed. The diagnostic stops on the first error.
+
+On a Linux validation environment with prerequisites installed, the non-root checks stop at the
+first failure:
+
+```sh
+set -e
+python -m ruff check --config worker/pyproject.toml worker tests scripts/check-live-export.py
+python -m compileall -q worker
+python -m unittest discover -s tests -v -f
+while IFS= read -r -d '' file; do php -l "$file"; done < <(find frontend tests -name '*.php' -print0)
+php tests/frontend.php
+node tests/frontend-poll.cjs
+bash -n scripts/install.sh scripts/uninstall.sh tests/install-smoke.sh
+shellcheck scripts/install.sh scripts/uninstall.sh tests/install-smoke.sh
+python -m build worker
+```
+
+Run the existing root installer smoke step only in a disposable GitHub Actions runner as configured
+in `.github/workflows/checks.yml`. API reads cannot provide transactional consistency: changes that
+revert between verification reads, and changes after the last read, remain an explicit limitation.
+Native prototype payload coverage and readable credentials keep the existing documented policy.
+
+### Authorized server update and live scope checks — 2026-10-12
+
+Following explicit authorization to update and test `super@172.16.100.7`, deployed the current local
+worker and frontend through `scripts/install.sh`, using the verified frontend root
+`/usr/share/zabbix/ui` and Apache process user `www-data`. The installer acquired the existing worker
+lock, retained `zabbix-utils==2.0.4`, and re-enabled the existing systemd queue watcher. Apache's
+configuration check passed and the service was reloaded. All **22 installed worker/module source
+files** match the staged local bytes. No source commit or remote source-repository push was made.
+
+The previous virtual environment, module and installation configuration/units/cron were copied into
+the root-only rollback archive `/opt/gitkeeper-rollback-20261012.lPWI58Y1/code.tar.gz` before the upgrade.
+Before/after hashes confirm that `settings.json`, the Zabbix/GitHub credentials and saved App settings
+are unchanged; the existing backup checkout HEAD is unchanged. The saved scope remains legacy `all`,
+with the existing 3-day interval. Monitoring configuration was not edited and no Git publication ran.
+
+Server checks ran on Linux, Python **3.12.3**, PHP **8.3.6**, Node **18.19.1**, and Zabbix **7.4.15**:
+
+- **All 62 Python tests passed**, including the actual POSIX lock test and temporary local Git
+  `all → used → all` transitions. These are regression fixtures run on the server, not live API tests.
+- PHP lint for every frontend/test PHP file, `php tests/frontend.php`,
+  `node tests/frontend-poll.cjs`, compileall and installer/uninstaller/smoke-script Bash syntax passed.
+- Installed-code API previews verified **364 templates**: `all` includes 364/excludes 0; automatic
+  `used` includes **14/excludes 350**. Adding the existing unused `Zabbix proxy health` template
+  (`10048`) manually includes **15/excludes 349**, with one effective manual inclusion.
+  An absent manual ID yielded one missing-manual warning only after the verified inventory read.
+- A live temporary `used` export completed all configured categories in **24.18 seconds**, including
+  native monitoring checks and final scope rechecks: templates/groups **26** (14 templates plus
+  **12 groups**), hosts/groups **26**, actions **6**, media types **40**, users/groups/roles **14**.
+  The **93 JSON files**, including the manifest, were deleted with the temporary directory; no
+  configuration content or credentials were printed, and no Publisher/GitHub operation was invoked.
+- A separate browser tab verified legacy `Tutti` initialization, switching to `Solo utilizzati`,
+  real CSRF-bearing preview POSTs, systemd queue processing, correlated polling and the actual counts.
+  Native manual autocomplete selected `Zabbix proxy health`; the real preview returned 15 inclusions.
+  The template popup opened, but selection through its group-filtered list was not exercised.
+  Manual selection and a draft interval of 3 days/2 hours remained intact across another preview.
+  The `all → used` confirmation was detected; the test did not submit a save. The automation's click
+  timed out at the native dialog and a later dismissal found no open dialog; subsequent state checks
+  confirmed unchanged settings and backup HEAD. Reloading the test tab discarded its unsaved drafts.
+- Apache, Zabbix server and the GitKeeper path watcher remain active; the worker unit reports
+  `Result=success` and `ExecMainStatus=0` after queued previews.
+
+Remaining acceptance: live Zabbix 7.0, the complete fresh-installation/OAuth sequence, a confirmed
+scope save/publication against a disposable destination, popup list selection, and the complete CI
+matrix/disposable root installer smoke test. No smoke installation was run on this existing server.

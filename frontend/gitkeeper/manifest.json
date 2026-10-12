@@ -8,7 +8,7 @@
   "description": "Private GitHub configuration tracking. Full recovery is not implemented.",
   "actions": {
     "gitkeeper.view": {"class": "View", "view": "gitkeeper.view"},
-    "gitkeeper.save": {"class": "Save"},
+    "gitkeeper.save": {"class": "Save", "layout": "layout.json"},
     "gitkeeper.status": {"class": "Status", "layout": "layout.json"}
   },
   "assets": {"js": ["gitkeeper.js"], "css": ["gitkeeper.css"]}

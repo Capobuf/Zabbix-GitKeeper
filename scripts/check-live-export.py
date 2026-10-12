@@ -2,6 +2,7 @@
 
 import argparse
 import getpass
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -19,6 +20,9 @@ def main() -> int:
     parser.add_argument("--url", required=True, help="Zabbix API URL (HTTPS in production)")
     parser.add_argument("--user", required=True, help="Super admin username")
     parser.add_argument("--categories", nargs="+", choices=CATEGORIES, default=list(CATEGORIES))
+    parser.add_argument("--template-mode", choices=("all", "used"), default="all")
+    parser.add_argument("--include-templateid", action="append", default=[])
+    parser.add_argument("--preview-scope", action="store_true", help="Only verify template scope; no native exports")
     args = parser.parse_args()
     api = None
     logged_in = False
@@ -27,17 +31,21 @@ def main() -> int:
         api.login(user=args.user, password=getpass.getpass("Zabbix password: "))
         logged_in = True
         # Supplying the authenticated API avoids creating a persistent API token.
-        # It does not change the installed worker's HTTPS-only credential validation.
+        # It does not change the installed worker's credentials or settings.
         exporter = Exporter({}, api=api)
         print(f"Zabbix {exporter.version}", flush=True)
-        exporter.check_permissions(args.categories)
+        scope = {"mode": args.template_mode, "include_templateids": args.include_templateid}
+        if args.preview_scope:
+            print(json.dumps(exporter.preview_scope(scope), sort_keys=True), flush=True)
+            return 0
+        exporter.check_permissions(args.categories, scope)
 
         def progress(category, state, result):
             count = f" ({result['objects']} objects)" if "objects" in result else ""
             print(f"{category}: {state}{count}", flush=True)
 
         with tempfile.TemporaryDirectory(prefix="gitkeeper-live-check-") as directory:
-            exporter.export(args.categories, Path(directory), progress)
+            exporter.export(args.categories, Path(directory), progress, scope)
         print("Selected export checks passed. Temporary snapshots removed; no Git push performed.")
         return 0
     except Exception as exc:

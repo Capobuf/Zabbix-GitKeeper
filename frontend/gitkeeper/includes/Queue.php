@@ -42,7 +42,8 @@ final class Queue {
         $allowed = ['connect' => [], 'disconnect' => [], 'repositories' => [], 'test_github' => [],
             'sync' => [], 'clear_zabbix' => [], 'save' => ['settings'],
             'set_zabbix' => ['url', 'token'], 'create_repository' => ['name'],
-            'set_github_app' => ['client_id'], 'select_repository' => ['repository_id']];
+            'set_github_app' => ['client_id'], 'select_repository' => ['repository_id'],
+            'preview_scope' => ['template_scope']];
         $keys = array_keys($params);
         if ($operation === 'create_repository' && array_key_exists('owner', $params)) {
             $keys = array_diff($keys, ['owner']);
@@ -68,6 +69,8 @@ final class Queue {
                 throw new RuntimeException('Invalid settings.');
             }
             $keys = array_keys($s);
+            $keys = array_diff($keys, ['template_scope']);
+            $keys = array_values($keys);
             sort($keys);
             if ($keys !== ['categories', 'interval', 'repository_id'] || !is_int($s['repository_id'])
                     || $s['repository_id'] <= 0 || !is_int($s['interval'])
@@ -77,6 +80,12 @@ final class Queue {
                     || count(array_unique($s['categories'])) !== count($s['categories'])) {
                 throw new RuntimeException('Select a repository, implemented categories and a valid interval.');
             }
+            if (array_key_exists('template_scope', $s)) {
+                self::templateScope($s['template_scope']);
+            }
+        }
+        elseif ($operation === 'preview_scope') {
+            self::templateScope($params['template_scope']);
         }
         elseif ($operation === 'set_zabbix') {
             self::apiUrl($params['url']);
@@ -101,8 +110,36 @@ final class Queue {
         }
     }
 
+    public static function templateScope($scope): array {
+        if (!is_array($scope)) {
+            throw new RuntimeException('Invalid template scope.');
+        }
+        $keys = array_keys($scope);
+        sort($keys);
+        if ($keys !== ['include_templateids', 'mode'] || !in_array($scope['mode'], ['all', 'used'], true)
+                || !is_array($scope['include_templateids'])
+                || $scope['include_templateids'] !== array_values($scope['include_templateids'])
+                || count($scope['include_templateids']) > 1000) {
+            throw new RuntimeException('Invalid template scope fields, mode or size.');
+        }
+        foreach ($scope['include_templateids'] as $id) {
+            if (!is_string($id) || !preg_match('/^[1-9][0-9]{0,19}$/D', $id)) {
+                throw new RuntimeException('Template IDs must be positive numeric strings.');
+            }
+        }
+        $ids = array_values(array_unique($scope['include_templateids']));
+        usort($ids, static fn($a, $b) => strlen($a) <=> strlen($b) ?: strcmp($a, $b));
+        return ['mode' => $scope['mode'], 'include_templateids' => $ids];
+    }
+
     public function submit(string $operation, array $params = []): string {
         self::validate($operation, $params);
+        if ($operation === 'save' && isset($params['settings']['template_scope'])) {
+            $params['settings']['template_scope'] = self::templateScope($params['settings']['template_scope']);
+        }
+        elseif ($operation === 'preview_scope') {
+            $params['template_scope'] = self::templateScope($params['template_scope']);
+        }
         $directory = $this->root.'/queue';
         if (!is_dir($directory) || !is_writable($directory) || count(glob($directory.'/*.json')) >= 100) {
             throw new RuntimeException('Worker queue unavailable or full. Check installation and cron.');
@@ -120,6 +157,9 @@ final class Queue {
             }
             $data = json_encode(['id' => $id, 'operation' => $operation, 'params' => (object) $params],
                 JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            if (strlen($data) > 65536) {
+                throw new RuntimeException('Queue request too large.');
+            }
             if (fwrite($stream, $data) !== strlen($data) || !fflush($stream)) {
                 throw new RuntimeException('Cannot write worker queue.');
             }

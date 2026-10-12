@@ -5,6 +5,7 @@ use API;
 use CController;
 use CControllerResponseFatal;
 use CControllerResponseRedirect;
+use CControllerResponseData;
 use CUrl;
 use CWebUser;
 use CMessageHelper;
@@ -19,7 +20,8 @@ class Save extends CController {
             'interval' => 'int32', 'interval_days' => 'int32', 'interval_hours' => 'int32',
             'interval_minutes' => 'int32', 'categories' => 'array', 'api_url' => 'string', 'api_token' => 'string',
             'repository_name' => 'string', 'repository_owner' => 'string', 'client_id' => 'string',
-            'consent' => 'in 1', 'tls_skip_verify' => 'in 1']);
+            'consent' => 'in 1', 'tls_skip_verify' => 'in 1', 'template_mode' => 'string',
+            'include_templateids' => 'array', 'confirm_template_scope' => 'in 1']);
         if (!$valid) {
             $this->setResponse(new CControllerResponseFatal());
         }
@@ -35,10 +37,19 @@ class Save extends CController {
         $created = null;
         $token_error = null;
         $interval_error = null;
+        $request_id = null;
+        $preview_error = null;
         try {
             $op = $this->getInput('operation');
             $params = [];
-            if ($op === 'save') {
+            if (in_array($op, ['save', 'preview_scope'], true)) {
+                $scope = Queue::templateScope(['mode' => $this->getInput('template_mode', 'all'),
+                    'include_templateids' => $this->getInput('include_templateids', [])]);
+            }
+            if ($op === 'preview_scope') {
+                $params = ['template_scope' => $scope];
+            }
+            elseif ($op === 'save') {
                 $interval = (int) $this->getInput('interval', Queue::DEFAULT_INTERVAL);
                 if ($interval === 0) {
                     $interval_error = _('Intervallo non valido: inserisci giorni non negativi, ore da 0 a 23 e minuti da 0 a 59, per un totale di almeno un minuto entro il limite supportato.');
@@ -47,7 +58,14 @@ class Save extends CController {
                     $interval_error = null;
                 }
                 $params = ['settings' => ['repository_id' => (int) $this->getInput('repository_id', 0),
-                    'interval' => $interval, 'categories' => $this->getInput('categories', [])]];
+                    'interval' => $interval, 'categories' => $this->getInput('categories', []), 'template_scope' => $scope]];
+                $saved = (new Queue())->status()['settings'] ?? [];
+                if (!empty($saved['categories']) && ($saved['template_scope']['mode'] ?? 'all') === 'all'
+                        && $scope['mode'] === 'used' && in_array('templates', $params['settings']['categories'], true)
+                        && $this->getInput('confirm_template_scope', 0) != 1) {
+                    $interval_error = _('Conferma il passaggio a Solo utilizzati: i file esclusi saranno rimossi dalla revisione Git corrente dopo una sincronizzazione riuscita; la cronologia rimane disponibile.');
+                    throw new \RuntimeException('Template scope transition requires confirmation.');
+                }
             }
             elseif ($op === 'set_zabbix' || $op === 'create_zabbix_token') {
                 $token_error = _('Enter an HTTP or HTTPS API URL ending in /api_jsonrpc.php, without credentials, query parameters or a fragment. No token was created or submitted.');
@@ -99,7 +117,9 @@ class Save extends CController {
                 ->setArgument('request_operation', $op)
                 ->setArgument('api_request', $op === 'set_zabbix' ? $request_id : '')
                 ->setArgument('sync_request', in_array($op, ['save', 'sync'], true) ? $request_id : ''));
-            CMessageHelper::setSuccessTitle(_('Richiesta inviata. Attendi l’esito del worker nella sezione dell’operazione.'));
+            if ($op !== 'preview_scope') {
+                CMessageHelper::setSuccessTitle(_('Richiesta inviata. Attendi l’esito del worker nella sezione dell’operazione.'));
+            }
         }
         catch (\Throwable $e) {
             if ($created !== null) {
@@ -122,8 +142,18 @@ class Save extends CController {
                 'set_zabbix' => _('Token verification was not submitted. Check the API URL, token format and worker queue permissions.'),
                 'create_zabbix_token' => _('Token setup was not submitted. Check the API URL, consent and worker queue permissions.')
             ];
-            CMessageHelper::setErrorTitle($token_error ?? $interval_error ?? $errors[$this->getInput('operation')] ??
-                _('Request was not submitted. Check that the worker is installed and its queue is writable.'));
+            $preview_error = _('Anteprima non inviata. Verifica la selezione dei template e la disponibilità della coda worker.');
+            if ($this->getInput('operation') !== 'preview_scope') {
+                CMessageHelper::setErrorTitle($token_error ?? $interval_error ?? $errors[$this->getInput('operation')] ??
+                    _('Request was not submitted. Check that the worker is installed and its queue is writable.'));
+            }
+        }
+        if ($this->getInput('operation') === 'preview_scope') {
+            $response = new CControllerResponseData(['main_block' => json_encode([
+                'request_id' => $request_id, 'error' => $preview_error])]);
+            $response->disableView();
+            $this->setResponse($response);
+            return;
         }
         $this->setResponse($redirect);
     }

@@ -15,6 +15,13 @@ document.addEventListener('DOMContentLoaded', () => {
     let timer;
     let requestFinished = false;
     let repositoriesKey = '';
+    let previewId = '';
+    let previewSubmitting = false;
+    let previewPending = false;
+    const showTemplateScope = () => {
+        if (get('template-manual')) get('template-manual').hidden = get('template-mode').value !== 'used';
+        if (get('template-manual-label')) get('template-manual-label').hidden = get('template-mode').value !== 'used';
+    };
     const busyStates = ['Queued', 'Saving', 'Running', 'Publishing'];
     const forms = [...root.querySelectorAll('form[data-gitkeeper-form]')];
     root.querySelectorAll('fieldset.collapsible').forEach(fieldset => new CFormFieldsetCollapsible(fieldset));
@@ -62,7 +69,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     const stepFor = operation => ({set_zabbix: 1, clear_zabbix: 1, connect: 2, disconnect: 2,
         set_github_app: 2, test_github: 2, repositories: 3, select_repository: 3,
-        create_repository: 3, save: 4, sync: 4})[operation];
+        create_repository: 3, save: 4, sync: 4, preview_scope: 4})[operation];
     const render = state => {
         rendering = true;
         try {
@@ -73,6 +80,23 @@ document.addEventListener('DOMContentLoaded', () => {
             const authorized = state.github === 'Ready';
             const syncBusy = busyStates.includes(sync.state);
             const current = state.current_request;
+            const preview = state.scope_preview;
+            const ownPreview = previewId && preview?.id === previewId;
+            const previewResult = ownPreview ? preview : null;
+            previewPending = Boolean(previewId && (state.request_pending || current?.id === previewId
+                || (ownPreview && preview.state === 'Running')));
+            if (ownPreview && ['Completed', 'Failed'].includes(preview.state)) {
+                previewPending = false;
+                requestFinished = true;
+            }
+            if (previewId) {
+                text('scope-preview', previewResult?.state === 'Completed'
+                    ? ui.preview_counts.replace(/\{(\w+)\}/g, (_, key) => previewResult.summary[key])
+                        + (previewResult.summary.warning ? ' ' + ui.scope_missing : '')
+                    : previewResult?.state === 'Failed' ? previewResult.error ?? ui.failed
+                    : previewResult?.state === 'Running' || current?.id === previewId ? ui.running
+                    : state.request_pending ? ui.queued : ui.unknown_result);
+            }
             const result = [state.last_sync, state.last_result].find(item => item?.id === root.dataset.requestId);
             const ownRunning = root.dataset.requestId && current?.id === root.dataset.requestId;
             const ownPending = root.dataset.requestId && state.request_pending;
@@ -143,6 +167,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!edited.has(check.id)) check.checked = (state.settings?.categories ?? state.available_categories ?? []).includes(category);
             }
             get('category-results').hidden = !Object.keys(state.categories ?? {}).length;
+            const scopeSummary = state.categories?.templates?.template_scope;
+            text('scope-summary', scopeSummary ? ui.preview_counts.replace(/\{(\w+)\}/g, (_, key) => scopeSummary[key])
+                + (scopeSummary.warning ? ' ' + ui.scope_missing : '') : '');
             text('excluded', JSON.stringify(Object.fromEntries(Object.entries(state.categories ?? {})
                 .map(([category, result]) => [category, result.excluded_fields ?? []])), null, 2));
             const interval = get('interval');
@@ -152,6 +179,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 intervalParts(minutes).forEach((value, index) => { durationInputs[index].value = value; });
             }
             showCustomInterval();
+            // Template selections are initialized server-side once; polling never replaces a draft.
+            showTemplateScope();
             const missing = get('sync-requirements');
             missing.replaceChildren(...sync.missing.map(([reason, action, target]) => {
                 const li = document.createElement('li');
@@ -166,6 +195,7 @@ document.addEventListener('DOMContentLoaded', () => {
             missing.hidden = sync.ready || syncBusy;
             setEnabled('sync', ready && sync.ready && !syncBusy);
             setEnabled('save', ready && sync.can_save && !syncBusy);
+            setEnabled('preview_scope', ready && state.zabbix_configured && !current && !previewSubmitting && !previewPending);
             setEnabled('set_github_app', ready && !current);
             setEnabled('connect', ready && Boolean(state.github_client_id) && !authorized && (!state.device || deviceExpired) && !current);
             for (const op of ['repositories', 'test_github', 'create_repository']) setEnabled(op, ready && authorized && !current);
@@ -216,6 +246,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const element = event.target.closest('z-select') ?? event.target;
         if (element.id) edited.add(element.id);
         if (element === get('interval') || durationInputs.includes(element)) showCustomInterval();
+        if (element === get('template-mode')) showTemplateScope();
     };
     root.addEventListener('input', markEdited);
     root.addEventListener('change', markEdited);
@@ -265,13 +296,66 @@ document.addEventListener('DOMContentLoaded', () => {
             target?.scrollIntoView({block: 'nearest'});
         }
     });
-    forms.forEach(form => form.addEventListener('submit', event => {
+    forms.forEach(form => form.addEventListener('submit', async event => {
         const button = event.submitter;
         if (form.dataset.submitting === '1' || !button) { event.preventDefault(); return; }
+        if (button.value === 'preview_scope') {
+            event.preventDefault();
+            if (previewSubmitting || previewPending) return;
+            previewSubmitting = true;
+            button.disabled = true;
+            text('scope-preview', ui.sent);
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 15000);
+            try {
+                const body = new FormData();
+                // Preserve the native CSRF field, while ignoring unrelated invalid duration drafts.
+                for (const [key, value] of new FormData(form)) {
+                    if (!['repository_id', 'interval', 'interval_days', 'interval_hours', 'interval_minutes',
+                        'categories[]', 'operation', 'confirm_template_scope'].includes(key)) body.append(key, value);
+                }
+                body.set('operation', 'preview_scope');
+                const response = await fetch(form.action, {method: 'POST', body, credentials: 'same-origin',
+                    cache: 'no-store', signal: controller.signal});
+                if ([401, 403].includes(response.status) || response.redirected) throw new Error('session');
+                if (!response.ok) throw new Error('unavailable');
+                const raw = await response.text();
+                if (raw.trimStart().startsWith('<')) throw new Error('session');
+                const result = JSON.parse(raw);
+                if (result.error) {
+                    if (typeof result.error !== 'string') throw new Error('session');
+                    text('scope-preview', result.error);
+                    return;
+                }
+                if (!/^[a-f0-9]{32}$/.test(result.request_id)) throw new Error('unavailable');
+                previewId = result.request_id;
+                previewPending = true;
+                root.dataset.requestId = previewId;
+                root.dataset.operation = 'preview_scope';
+                requestFinished = false;
+                text('scope-preview', ui.queued);
+                schedule(0);
+            } catch (error) {
+                text('scope-preview', error.message === 'session' ? ui.session : ui.unavailable);
+            } finally {
+                clearTimeout(timeout);
+                previewSubmitting = false;
+                setEnabled('preview_scope', !previewPending && Boolean(lastState.zabbix_configured));
+            }
+            return;
+        }
         if (button.dataset.confirm && !window.confirm(button.dataset.confirm)) { event.preventDefault(); return; }
         if (button.value === 'set_github_app' && lastState.github_client_id
                 && root.querySelector('[name="client_id"]').value.trim() !== lastState.github_client_id
                 && !window.confirm(ui.change_app)) { event.preventDefault(); return; }
+        if (button.value === 'save' && lastState.settings?.categories?.length
+                && (lastState.settings?.template_scope?.mode ?? 'all') === 'all'
+                && get('template-mode')?.value === 'used' && get('category-templates').checked) {
+            if (!window.confirm(ui.change_scope)) { event.preventDefault(); return; }
+            const confirmation = document.createElement('input');
+            confirmation.type = 'hidden'; confirmation.name = 'confirm_template_scope'; confirmation.value = '1';
+            form.append(confirmation);
+        }
         // Disabled submitters are omitted from native POST: preserve the validated operation explicitly.
         const operation = document.createElement('input');
         operation.type = 'hidden'; operation.name = 'operation'; operation.value = button.value;
@@ -290,6 +374,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (stopped || document.hidden || inFlight) return;
         inFlight = true;
         const controller = new AbortController();
+        const pollingRequestId = root.dataset.requestId;
         const timeout = setTimeout(() => controller.abort(), 15000);
         try {
             const url = new URL('zabbix.php', window.location.href);
@@ -304,6 +389,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (body.trimStart().startsWith('<')) throw new Error('session');
             const state = JSON.parse(body);
             if (!state.synchronization || !state.setup) throw new Error('unavailable');
+            // A preview POST can change correlation while this read is already in flight.
+            if (pollingRequestId !== root.dataset.requestId) return;
             render(state);
         } catch (error) {
             text('worker-warning', error.message === 'session' ? ui.session : ui.unavailable);

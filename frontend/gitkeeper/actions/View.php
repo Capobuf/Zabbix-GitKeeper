@@ -5,6 +5,7 @@ use CController;
 use CControllerResponseData;
 use CWebUser;
 use CSettingsHelper;
+use API;
 use Modules\GitKeeper\Installation;
 use Modules\GitKeeper\Queue;
 
@@ -43,7 +44,24 @@ class View extends CController {
             $api_url = Installation::apiUrl(CSettingsHelper::get(CSettingsHelper::URL));
             $api_url_source = $api_url !== '' ? _('URL frontend dalle impostazioni Zabbix (da verificare)') : '';
         }
-        $response = new CControllerResponseData(['status' => $status,
+        $manual_templates = [];
+        try {
+            $scope = Queue::templateScope($status['settings']['template_scope'] ?? ['mode' => 'all', 'include_templateids' => []]);
+            $ids = $scope['include_templateids'];
+            // Never send an empty API filter: it would enumerate all templates.
+            $templates = $ids ? API::Template()->get(['output' => ['templateid', 'name'], 'templateids' => $ids]) : [];
+            $names = array_column($templates, 'name', 'templateid');
+            foreach ($ids as $id) {
+                $manual_templates[] = ['id' => $id, 'name' => $names[$id] ?? _('Template non disponibile').' ('.$id.')'];
+            }
+        }
+        catch (\Throwable $e) {
+            // A local label lookup must not expose API responses or discard saved selection.
+            foreach ($status['settings']['template_scope']['include_templateids'] ?? [] as $id) {
+                $manual_templates[] = ['id' => $id, 'name' => $id];
+            }
+        }
+        $response = new CControllerResponseData(['status' => $status, 'manual_templates' => $manual_templates,
             'api_url' => $api_url, 'api_url_source' => $api_url_source,
             'api_request' => $this->getInput('api_request', ''),
             'sync_request' => $this->getInput('sync_request', ''),

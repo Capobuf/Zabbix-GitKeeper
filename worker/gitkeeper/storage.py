@@ -69,7 +69,7 @@ def api_url(value: str) -> str:
 
 
 def settings(value: dict) -> dict:
-    if not isinstance(value, dict) or set(value) != {"repository_id", "categories", "interval"}:
+    if not isinstance(value, dict) or set(value) - {"template_scope"} != {"repository_id", "categories", "interval"}:
         raise Error("Invalid settings fields.")
     if type(value["repository_id"]) is not int or value["repository_id"] <= 0:
         raise Error("Select an authorized private repository.")
@@ -79,7 +79,25 @@ def settings(value: dict) -> dict:
     if (not isinstance(cats, list) or not cats or any(c not in CATEGORIES for c in cats)
             or len(set(cats)) != len(cats)):
         raise Error("Select implemented categories only.")
-    return {**value, "categories": sorted(cats)}
+    result = {**value, "categories": sorted(cats)}
+    if "template_scope" in value:
+        if value["template_scope"] is None:
+            raise Error("Invalid template scope.")
+        result["template_scope"] = template_scope(value["template_scope"])
+    return result
+
+
+def template_scope(value=None) -> dict:
+    if value is None:
+        return {"mode": "all", "include_templateids": []}
+    if (not isinstance(value, dict) or set(value) != {"mode", "include_templateids"}
+            or value["mode"] not in ("all", "used")):
+        raise Error("Invalid template scope fields or mode.")
+    ids = value["include_templateids"]
+    if (not isinstance(ids, list) or len(ids) > 1000
+            or any(not isinstance(i, str) or not re.fullmatch(r"[1-9][0-9]{0,19}", i) for i in ids)):
+        raise Error("Select at most 1000 templates with positive string IDs.")
+    return {"mode": value["mode"], "include_templateids": sorted(set(ids), key=int)}
 
 
 def command(value: dict) -> dict:
@@ -87,7 +105,7 @@ def command(value: dict) -> dict:
         "connect": set(), "disconnect": set(), "repositories": set(), "test_github": set(),
         "sync": set(), "clear_zabbix": set(), "save": {"settings"},
         "set_zabbix": {"url", "token"}, "create_repository": {"name"}, "set_github_app": {"client_id"},
-        "select_repository": {"repository_id"}
+        "select_repository": {"repository_id"}, "preview_scope": {"template_scope"}
     }
     if not isinstance(value, dict) or set(value) != {"id", "operation", "params"}:
         raise Error("Invalid request envelope.")
@@ -100,6 +118,10 @@ def command(value: dict) -> dict:
         raise Error("Unsupported operation or parameters.")
     if op == "save":
         params["settings"] = settings(params["settings"])
+    elif op == "preview_scope":
+        if params["template_scope"] is None:
+            raise Error("Invalid template scope.")
+        params["template_scope"] = template_scope(params["template_scope"])
     elif op == "set_zabbix":
         api_url(params["url"])
         if "verify_tls" in params and type(params["verify_tls"]) is not bool:

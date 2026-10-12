@@ -3,9 +3,11 @@
 The native PHP module registers Administration → GitKeeper using Zabbix's menu API and manifest 2.0.
 All controllers require Super admin. Mutations use default native `CController` CSRF checking and POST
 forms with the exact module action token. Read-only view/status actions disable CSRF checks.
-The frontend uses native Zabbix components, with a small read-only status polling script.
+The frontend uses native Zabbix components, with a small status polling script.
 The page has two tabs (Panoramica and Impostazioni); setup is derived from public worker state.
-Native POST forms retain CSRF and redirects. A single visibility-aware polling loop updates status,
+Native POST forms retain CSRF and redirects. Template previews POST the same save action with
+native CSRF, which uses `layout.json` for the preview response; regular operations still redirect.
+A single visibility-aware polling loop updates status,
 category counts, authorization codes and repository options without automatic page reloads or loss of edits.
 The latest snapshot outcome (`last_sync`) is independent of `last_result` for other operations.
 `current_request` identifies a request after the secret-bearing queue file is claimed; none of these
@@ -64,6 +66,53 @@ are preserved, but resolved Vault secrets are not returned by native export. Use
 and MFA secrets are not collected. Worker authentication tokens remain outside snapshots and public status.
 Snapshots contain plaintext credentials returned by Zabbix and must remain in the private repository.
 Manifest schema 2 identifies this readable-credentials policy; schema 1 snapshots used broad redaction.
+
+## Smart Template Scope
+
+Settings optionally contain `template_scope: {mode: "all"|"used", include_templateids: [...]}`.
+Omission retains the legacy `all` behavior and does not migrate persistent settings. PHP/Python
+reject unexpected keys, invalid modes, non-string/nonpositive IDs, leading zeros and requests with
+more than 1000 manual IDs (maximum 20 ASCII digits each). IDs are deduplicated and sorted numerically;
+the existing 64 KiB queue limit also applies. Saved selections initialize a native `CMultiSelect`;
+polling never replaces template draft controls. The existing two tabs are retained.
+Native name lookup/autocomplete uses the frontend's API, while the worker uses its configured endpoint;
+manual selection requires both to address the same Zabbix instance (their URL strings may differ).
+
+In `used`, `enumerate()` verifies the full template inventory with `selectParentTemplates` and
+bulk reads every configured host with `selectParentTemplates`, host prototypes with `selectParentHost`
+and `selectTemplates`, and actions with narrow operation selectors. No monitored/status filters,
+pagination or per-template relation queries are used. Only operation types 6/7 (link/unlink template)
+require `optemplate`; recovery/update operations do not support these template operations in the
+reviewed series. Both disabled actions and hosts contribute regardless of export categories.
+Only IDs, template names and decisive edges survive normalization of the API response.
+
+`scope.resolve()` is a pure set closure: host/action/manual seeds, transitive parent templates and
+prototype links from configured hosts or included templates repeat until stable. It handles duplicates
+and cycles without including unrelated child templates. Missing automatic references abort; missing
+manual references are recorded only against the verified full inventory. A verified empty selection
+performs no native template export and never sends an empty API filter. Template groups remain complete.
+The permission probe adds host, hostprototype and action reads only when selective templates require them.
+
+Native exports and `verify_native()` run only for selected templates. All decisive inventories/edges
+are read again after every selected category has completed and before manifest/publication. Detected
+changes abort the stage. This is detection, not an API transaction: changes that revert between reads
+and edits after the final check remain outside the guarantee.
+
+Schema 2 `coverage.templates.template_scope` contains mode, total/selected/excluded template counts,
+effective manual count and sorted missing manual IDs. `coverage.templates.template_groups` counts
+groups separately; the legacy `objects` count remains selected templates plus groups. Metadata has no
+variable timestamps. `all` emits the same manifest/file structure as legacy exports. Public progress
+and final status replace missing-ID lists with their count and a fixed warning; no template payloads,
+macros or credentials are exposed.
+
+`preview_scope` accepts only the scope settings and reuses the resolver and final read verification.
+It never invokes native export or Publisher and never writes settings. `scope_preview` retains a request
+ID, Running/Completed/Failed and safe counts/error; queue filename correlation supplies Queued.
+The existing polling loop displays only the matching result. The preview is not an authorization or
+cached scope for sync. Confirmed `all` to `used` saves reuse Publisher's managed-tree replacement:
+excluded files leave the current revision, while prior history remains intact. Lock, private staging,
+retry, private-repository checks and ordinary push behavior are unchanged. Existing scheduled work
+continues under the normal worker tick independently of preview requests.
 
 Each export is prepared in a worker-only temporary directory. All selected categories must succeed
 before a deterministic manifest with checksums is produced. Only then does Git create a temporary

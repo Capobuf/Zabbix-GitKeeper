@@ -25,6 +25,10 @@ class CController {
     public function getInput($key, $default = null) { return $this->input[$key] ?? $default; }
 }
 class CControllerResponseFatal {}
+class CControllerResponseData {
+    public function __construct(public array $data) {}
+    public function disableView() {}
+}
 class CControllerResponseRedirect {
     public function __construct($url) {}
 }
@@ -241,7 +245,9 @@ try {
         chmod($requests[0], 0600);
         $request = json_decode(file_get_contents($requests[0]), true);
         ensure($request['params']['settings']['interval'] === ($input['interval'] ?: 1507), 'Incorrect duration handoff');
-        ensure(count($request['params']['settings']) === 3, 'Custom parts leaked into the worker protocol');
+        ensure(count($request['params']['settings']) === 4, 'Custom parts leaked into the worker protocol');
+        ensure($request['params']['settings']['template_scope'] === ['mode' => 'all', 'include_templateids' => []],
+            'Legacy controller input must retain all templates');
         unlink($requests[0]);
     }
     foreach ([['interval_days' => 0, 'interval_hours' => 0, 'interval_minutes' => 0], []] as $parts) {
@@ -250,6 +256,56 @@ try {
         ensure(glob($root.'/queue/*.json') === [], 'Zero or missing custom parts were queued');
         ensure(str_contains(CMessageHelper::$error, 'Intervallo non valido'), 'Custom interval error was not identified');
     }
+    $scope = ['mode' => 'used', 'include_templateids' => ['11', '2', '11']];
+    ensure(Queue::templateScope($scope)['include_templateids'] === ['2', '11'], 'Scope normalization failed');
+    foreach ([null, [], ['mode' => 'diff', 'include_templateids' => []],
+            ['mode' => 'used', 'include_templateids' => [11]], ['mode' => 'used', 'include_templateids' => ['0']],
+            ['mode' => 'used', 'include_templateids' => ['01']], ['mode' => 'used', 'include_templateids' => ['١']],
+            ['mode' => 'all', 'include_templateids' => array_fill(0, 1001, '1')],
+            $scope + ['extra' => 1]] as $invalid) {
+        $rejected = false;
+        try { Queue::validate('preview_scope', ['template_scope' => $invalid]); }
+        catch (Throwable $e) { $rejected = true; }
+        ensure($rejected, 'Invalid template scope accepted');
+    }
+    ensure(str_contains($view, 'new CMultiSelect(') && str_contains($view, "'object_name' => 'templates'"),
+        'Template search must use the native multiselect');
+    $manifest = json_decode(file_get_contents(__DIR__.'/../frontend/gitkeeper/manifest.json'), true);
+    ensure($manifest['actions']['gitkeeper.save']['layout'] === 'layout.json', 'Preview JSON requires the native JSON layout');
+    ensure($controller->csrf, 'Preview and save must retain native CSRF validation');
+    $controller->input = ['operation' => 'preview_scope', 'template_mode' => 'used', 'include_templateids' => ['11', '2', '11']];
+    $action->invoke($controller);
+    $preview_response = json_decode($controller->response->data['main_block'], true);
+    ensure(preg_match('/^[a-f0-9]{32}$/D', $preview_response['request_id']) === 1 && $preview_response['error'] === null,
+        'Preview must return a correlated JSON response without redirect');
+    $requests = glob($root.'/queue/*.json');
+    ensure(count($requests) === 1, 'Preview was not queued');
+    chmod($requests[0], 0600);
+    $request = json_decode(file_get_contents($requests[0]), true);
+    ensure($request['operation'] === 'preview_scope' && array_keys($request['params']) === ['template_scope'],
+        'Preview must not submit saved repository or credentials');
+    ensure($request['params']['template_scope']['include_templateids'] === ['2', '11'], 'Queued selection not normalized');
+    ensure((new Queue($root))->status('', '', $preview_response['request_id'])['request_pending'], 'Queued preview not visible');
+    unlink($requests[0]);
+    $controller->input['template_mode'] = 'invalid';
+    $action->invoke($controller);
+    ensure(json_decode($controller->response->data['main_block'], true)['error'] !== null && glob($root.'/queue/*.json') === [],
+        'Invalid preview must return a safe error and not enqueue');
+    file_put_contents($root.'/public/status.json', json_encode(['settings' => ['categories' => ['templates']]]));
+    $controller->input = ['operation' => 'save', 'repository_id' => 42, 'categories' => ['templates'],
+        'interval' => 4320, 'template_mode' => 'used', 'include_templateids' => ['11']];
+    $action->invoke($controller);
+    ensure(glob($root.'/queue/*.json') === [], 'all to used must require confirmation');
+    ensure(str_contains(CMessageHelper::$error, 'Conferma'), 'Scope transition explanation missing');
+    $controller->input['confirm_template_scope'] = 1;
+    $action->invoke($controller);
+    $requests = glob($root.'/queue/*.json');
+    ensure(count($requests) === 1, 'Confirmed scope not saved');
+    chmod($requests[0], 0600);
+    $request = json_decode(file_get_contents($requests[0]), true);
+    ensure($request['params']['settings']['template_scope']['include_templateids'] === ['11'], 'Saved scope lost selection');
+    unlink($requests[0]);
+    unlink($root.'/public/status.json');
     $controller->input = ['operation' => 'create_zabbix_token', 'api_url' => ' http://127.0.0.1/zabbix/api_jsonrpc.php ', 'consent' => 1];
     $action->invoke($controller);
     ensure(CMessageHelper::$success !== '', 'Successful token setup had no notification');
