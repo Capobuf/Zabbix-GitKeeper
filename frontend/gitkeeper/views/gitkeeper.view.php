@@ -118,7 +118,7 @@ if (!$worker_ready) {
                 ->setAttribute('data-copied', _('Copied'))
                 ->setAttribute('data-fallback', _('Select and copy the command manually.'))
         ]))->addClass(CFormField::ZBX_STYLE_FORM_FIELD_OFFSET_1));
-        $installation->addItem($note(_('Prerequisites: Python 3.10+ with venv/pip, Git, PHP and cron. After installation, restart your PHP-FPM/Apache service to apply group permissions, then reload this page.')));
+        $installation->addItem($note(_('Prerequisites: Python 3.10+ with venv/pip, Git, PHP, systemd and cron. After installation, restart your PHP-FPM/Apache service to apply group permissions, then reload this page.')));
     }
     else {
         $installation->addItem($note(_('Cannot detect the frontend path and PHP process user. Follow the installation guide and pass the verified --frontend-root and --web-user values.')));
@@ -308,7 +308,7 @@ $verification_titles = ['Queued' => _('Token verification queued'), 'Running' =>
     'Removed' => _('Stored token removed'), 'Not configured' => _('API token not configured'),
     'Submitting' => _('Submitting token setup...'), 'Unavailable' => _('Verification status unavailable')];
 $verification_messages = [
-    'Queued' => _('Your request was received. Verification has not finished yet; it normally starts within one minute. This result updates automatically.'),
+    'Queued' => _('Your request was received. Verification starts automatically; if another operation is running, wait for it to finish. This result updates automatically.'),
     'Running' => _('The worker is checking API access and required permissions. Wait for the result here.'),
     'Verified' => _('The token passed verification and was saved securely. Zabbix API setup is complete.'),
     'Failed' => _('The submitted token was not activated. Check the error below before retrying. Any previous verified token remains stored.'),
@@ -348,7 +348,7 @@ $api_body = [
             (new CSpan($status['state'] ?? '-'))->setId('gitkeeper-api-state')->setAttribute('role', 'status'))])
         ->addItem([new CLabel(_('Last error')), new CFormField(
             (new CSpan($status['error'] ?? '-'))->setId('gitkeeper-api-error')->setAttribute('role', 'status'))])
-        ->addItem($note(_('After submission, verification starts on the next worker tick, normally within one minute. Wait for Configured or check Last error here.')))
+        ->addItem($note(_('After submission, verification starts automatically. If the worker is busy, your request waits. Follow the verification result above.')))
         ->addItem($note($api_ready
             ? _('The API token is configured. To replace it, create or verify another token below.')
             : _('Create a token below, or use an existing Super admin token. Configuration exports become available after verification succeeds.')))

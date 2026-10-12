@@ -1,0 +1,10 @@
+# Managed by Zabbix GitKeeper.
+[Unit]
+Description=Start Zabbix GitKeeper when a UI request is queued
+
+[Path]
+PathExistsGlob=/var/lib/zabbix-gitkeeper/queue/*.json
+Unit=zabbix-gitkeeper.service
+
+[Install]
+WantedBy=multi-user.target

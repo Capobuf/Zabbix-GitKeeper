@@ -1,0 +1,13 @@
+# Managed by Zabbix GitKeeper.
+[Unit]
+Description=Zabbix GitKeeper worker
+After=network.target
+
+[Service]
+Type=oneshot
+User=gitkeeper
+Group=gitkeeper
+SupplementaryGroups=gitkeeper-ui
+UMask=0077
+ExecStart=/opt/zabbix-gitkeeper/venv/bin/gitkeeper --config /etc/zabbix-gitkeeper/worker.json
+TimeoutStartSec=0

@@ -204,6 +204,19 @@ change is performed by this command.
 - Tests and visual verification are left to the user, as requested. No new snapshot was triggered
   and the ongoing worker was not interrupted for diagnosis or deployment.
 
+## Immediate UI request activation, 2026-10-12
+
+- Implemented native systemd path activation for finalized queue JSON files. Cron starts the same
+  oneshot worker service, so UI requests and scheduled checks share service serialization and the
+  existing worker lock. Requests arriving during an export reactivate the service after it exits.
+- Unit files are distributed with the project. Installation requires running systemd, checks for
+  foreign/symlinked unit targets and automatically installs/enables the watcher. Upgrades pause the
+  watcher while updating under the worker lock. Uninstall disables/removes the managed units while
+  preserving credentials and pending requests. No PHP shell execution or service permissions were added.
+- Updated the existing installer fixture to check unit installation and isolate its queue-permission
+  check from automatic execution. Tests, trigger verification and visual checks are left to the user.
+  No synthetic request or snapshot was submitted for verification.
+
 ## Earlier automated checks
 
 Executed successfully on 2026-10-11:

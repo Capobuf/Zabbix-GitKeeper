@@ -22,11 +22,20 @@ while (($#)); do
         *) die "Unknown argument: $1" ;;
     esac
 done
-for tool in python3 git php getent groupadd useradd usermod install realpath flock; do
+for tool in python3 git php getent groupadd useradd usermod install realpath flock systemctl; do
     command -v "$tool" >/dev/null || die "Missing requirement: $tool"
 done
 python3 -c 'import sys, venv; assert sys.version_info >= (3,10)' || die 'Python 3.10+ with venv is required.'
 [[ -d /etc/cron.d ]] || die 'A cron implementation reading /etc/cron.d is required.'
+[[ -d /run/systemd/system ]] || die 'Systemd must be running to start UI requests immediately.'
+for unit in zabbix-gitkeeper.service zabbix-gitkeeper.path; do
+    target=/etc/systemd/system/$unit
+    [[ ! -L $target ]] || die "Refusing symlinked unit: $target"
+    if [[ -e $target ]]; then
+        IFS= read -r marker < "$target" || die "Cannot read unit: $target"
+        [[ $marker == '# Managed by Zabbix GitKeeper.' ]] || die "A foreign unit occupies $target"
+    fi
+done
 command -v zabbix_server >/dev/null || [[ -x /usr/sbin/zabbix_server ]] || [[ -f /etc/zabbix/zabbix_server.conf ]] \
     || die 'No local Zabbix server detected. This iteration requires a shared server/frontend machine.'
 [[ -n $WEB_USER ]] || die 'Pass --web-user with the actual PHP-FPM/Apache process user.'
@@ -100,6 +109,9 @@ exec 9>/var/lib/zabbix-gitkeeper/private/worker.lock
 flock -n 9 || die 'Worker is running. Retry installation after it finishes.'
 chown gitkeeper:gitkeeper /var/lib/zabbix-gitkeeper/private/worker.lock
 chmod 0600 /var/lib/zabbix-gitkeeper/private/worker.lock
+if [[ -f /etc/systemd/system/zabbix-gitkeeper.path ]]; then
+    systemctl stop zabbix-gitkeeper.path
+fi
 if [[ ! -x /opt/zabbix-gitkeeper/venv/bin/python ]]; then
     (umask 022; python3 -m venv /opt/zabbix-gitkeeper/venv)
 fi
@@ -130,13 +142,22 @@ os.replace(name,target)
 PY
 chown root:gitkeeper /etc/zabbix-gitkeeper/worker.json
 chmod 0640 /etc/zabbix-gitkeeper/worker.json
+for unit in zabbix-gitkeeper.service zabbix-gitkeeper.path; do
+    install -o root -g root -m 0644 "$SOURCE/scripts/systemd/$unit" "/etc/systemd/system/$unit"
+done
+systemctl daemon-reload
+# Both the queue watcher and cron start the same unit; an active export is never restarted.
 printf '%s\n' '# Managed by Zabbix GitKeeper.' \
     'SHELL=/bin/sh' 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
-    '* * * * * gitkeeper /opt/zabbix-gitkeeper/venv/bin/gitkeeper --config /etc/zabbix-gitkeeper/worker.json >> /var/log/zabbix-gitkeeper/cron.log 2>&1' \
+    '* * * * * root systemctl start --no-block zabbix-gitkeeper.service' \
     > /etc/cron.d/.zabbix-gitkeeper.tmp
 chown root:root /etc/cron.d/.zabbix-gitkeeper.tmp
 chmod 0644 /etc/cron.d/.zabbix-gitkeeper.tmp
 mv -f /etc/cron.d/.zabbix-gitkeeper.tmp /etc/cron.d/zabbix-gitkeeper
+# All code/config updates are complete. A pending request may now safely start the worker.
+flock -u 9
+systemctl enable --now zabbix-gitkeeper.path
+printf '%s\n' 'UI requests start the worker immediately through systemd; cron handles periodic checks.'
 printf '%s\n' 'Installed. Restart PHP-FPM/Apache to pick up group membership.' \
     'In Administration > General > Modules: Scan directory, then enable Zabbix GitKeeper.' \
     'Open Administration > GitKeeper > GitHub and save your GitHub App Client ID if not supplied during installation.' \

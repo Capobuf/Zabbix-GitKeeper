@@ -177,7 +177,7 @@ final class Queue {
             'Saving' => _('Validating and saving settings'), 'Running' => _('Snapshot in progress'),
             'Failed' => _('Synchronization failed'), 'Completed' => _('Snapshot completed'), 'Ready' => _('Configured')];
         $messages = ['Incomplete' => _('Complete the missing setup steps below before starting a snapshot.'),
-            'Queued' => _('Your request was received. Wait for the worker; it normally starts within one minute. Do not submit it again.'),
+            'Queued' => _('Your request was received. Processing starts automatically; if another operation is running, this request waits for it to finish. Do not submit it again.'),
             'Saving' => _('The worker is checking the selected repository and API permissions before saving your settings.'),
             'Running' => _('Settings are saved and the snapshot is in progress. Large categories can take several minutes. Follow the category results below.'),
             'Failed' => _('The last save or snapshot failed. Check Last error below; the missing steps list shows whether setup still needs attention.'),

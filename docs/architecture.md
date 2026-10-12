@@ -5,10 +5,18 @@ All controllers require Super admin. Mutations use default native `CController` 
 forms with the exact module action token. Read-only view/status actions disable CSRF checks.
 The frontend uses native Zabbix components, with a small read-only status polling script.
 
-PHP writes atomically renamed JSON requests; it never invokes a shell. The one-minute cron worker
-processes up to 20 requests per tick under POSIX `flock`, then polls authorization, refreshes tokens,
-and runs a due/manual export. No HTTP service, daemon, application database or core frontend patches.
+PHP writes atomically renamed JSON requests; it never invokes a shell. A native systemd path unit
+watches finalized `queue/*.json` files and starts the worker immediately. The one-minute cron starts
+the same oneshot service for authorization polling, token refresh and scheduled exports. Systemd
+serializes these starts; requests published during a running export remain queued and reactivate
+the service when it exits. The existing POSIX `flock` also protects manual invocations and upgrades.
+Each tick processes up to 20 requests, then polls authorization, refreshes tokens and runs a due/manual
+export. No HTTP service, permanent worker process, application database or core frontend patches.
 Only explicit operations and exact parameter sets are accepted independently by PHP and Python.
+The installer requires running systemd and installs/enables the path unit automatically on every
+supported host. PHP needs no shell execution, sudo rule, service-management permission or extra setting.
+The service runs as `gitkeeper` and has no startup timeout, allowing large exports to finish.
+See the native [path activation semantics](https://github.com/systemd/systemd/blob/main/man/systemd.path.xml).
 
 ## Filesystem identities
 

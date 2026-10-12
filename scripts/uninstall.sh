@@ -20,9 +20,26 @@ PY
 for path in /opt/zabbix-gitkeeper /var/lib/zabbix-gitkeeper/private /etc/cron.d/zabbix-gitkeeper; do
     [[ ! -L $path ]] || die "Refusing symlinked path: $path"
 done
+for unit in zabbix-gitkeeper.service zabbix-gitkeeper.path; do
+    target=/etc/systemd/system/$unit
+    [[ ! -L $target ]] || die "Refusing symlinked unit: $target"
+    if [[ -e $target ]]; then
+        IFS= read -r marker < "$target" || die "Cannot read unit: $target"
+        [[ $marker == '# Managed by Zabbix GitKeeper.' ]] || die "Refusing foreign unit: $target"
+    fi
+done
 exec 9>/var/lib/zabbix-gitkeeper/private/worker.lock
 flock -n 9 || die 'Worker is running. Retry after it finishes.'
+# Stop activation while holding the worker lock, without terminating an export.
+if command -v systemctl >/dev/null && [[ -d /run/systemd/system && -f /etc/systemd/system/zabbix-gitkeeper.path ]]; then
+    systemctl disable --now zabbix-gitkeeper.path
+    systemctl stop zabbix-gitkeeper.service
+fi
 rm -f -- /etc/cron.d/zabbix-gitkeeper
+rm -f -- /etc/systemd/system/zabbix-gitkeeper.path /etc/systemd/system/zabbix-gitkeeper.service
+if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
+    systemctl daemon-reload
+fi
 [[ ! -d $MODULE ]] || rm -rf -- "$MODULE"
 [[ ! -d /opt/zabbix-gitkeeper ]] || rm -rf -- /opt/zabbix-gitkeeper
 printf '%s\n' 'Worker, cron and module removed. Disable/remove the module record in the Zabbix Modules page.' \

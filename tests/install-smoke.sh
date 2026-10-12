@@ -22,6 +22,16 @@ bash "$SOURCE/scripts/install.sh" "${ARGS[@]}"
 [[ $(sha256sum /var/lib/zabbix-gitkeeper/private/settings.json) == "$before" ]]
 [[ $(sha256sum /etc/cron.d/zabbix-gitkeeper) == "$cron_before" ]]
 [[ $(grep -c '^\* \* \* \* \* ' /etc/cron.d/zabbix-gitkeeper) == 1 ]]
+if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
+    systemctl is-enabled --quiet zabbix-gitkeeper.path
+    grep -Fx 'PathExistsGlob=/var/lib/zabbix-gitkeeper/queue/*.json' /etc/systemd/system/zabbix-gitkeeper.path
+    grep -Fx 'User=gitkeeper' /etc/systemd/system/zabbix-gitkeeper.service
+    grep -Fx 'TimeoutStartSec=0' /etc/systemd/system/zabbix-gitkeeper.service
+    grep -Fx '* * * * * root systemctl start --no-block zabbix-gitkeeper.service' /etc/cron.d/zabbix-gitkeeper
+    # This fixture checks queue permissions, not API execution or path activation.
+    systemctl stop zabbix-gitkeeper.path zabbix-gitkeeper.service
+fi
+rm -f -- /etc/cron.d/zabbix-gitkeeper
 stat -c '%a %U:%G %n' /var/lib/zabbix-gitkeeper/private /var/lib/zabbix-gitkeeper/public /opt/zabbix-gitkeeper/venv/bin/gitkeeper
 [[ $(stat -c '%a' /var/lib/zabbix-gitkeeper/private) == 700 ]]
 [[ $(stat -c '%a' /var/lib/zabbix-gitkeeper/public) == 2750 ]]
@@ -40,5 +50,6 @@ os.unlink(p)
 '
 bash "$SOURCE/scripts/uninstall.sh"
 [[ ! -e /etc/cron.d/zabbix-gitkeeper && ! -e /opt/zabbix-gitkeeper && ! -e $TEMP_ROOT/frontend/modules/gitkeeper ]]
+[[ ! -e /etc/systemd/system/zabbix-gitkeeper.path && ! -e /etc/systemd/system/zabbix-gitkeeper.service ]]
 [[ $(sha256sum /var/lib/zabbix-gitkeeper/private/settings.json) == "$before" ]]
 echo 'Installer rerun, filesystem isolation and state-preserving uninstall passed (fixture only).'

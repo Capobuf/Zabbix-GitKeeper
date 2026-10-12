@@ -47,7 +47,7 @@ class Save extends CController {
                 'set_zabbix' => _('Verification queued. The submitted token is not active yet. Follow the verification result in Zabbix API.'),
                 'clear_zabbix' => _('Stored token removal requested. This does not revoke the token in Zabbix.'),
                 'save' => _('Settings save and snapshot requested. Follow progress in Overview.'),
-                'sync' => _('Snapshot queued. It starts on the next worker tick, normally within one minute. Follow Worker status and Last error in Overview.')
+                'sync' => _('Snapshot queued. Processing starts automatically; wait if another operation is running. Follow Worker status and Last error in Overview.')
             ];
             $message = $messages[$op] ?? _('Request submitted. Wait for the status to update.');
             $params = [];

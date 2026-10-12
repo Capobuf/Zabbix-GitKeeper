@@ -7,8 +7,8 @@ There is no stable release or selected project license. Use a disposable instanc
 
 ## Prerequisites
 
-- Python 3.10+ with `venv`/pip, system Git, frontend-compatible PHP (8.0+), cron reading `/etc/cron.d`, and standard Linux account/filesystem tools.
-- A working Zabbix HTTPS JSON-RPC URL with a certificate trusted by Python. For a local CA, install it in the system trust store. Certificate validation cannot be disabled through the UI.
+- Python 3.10+ with `venv`/pip, system Git, frontend-compatible PHP (8.0+), running systemd, cron reading `/etc/cron.d`, and standard Linux account/filesystem tools.
+- A working Zabbix HTTP or HTTPS JSON-RPC URL. HTTPS validates certificates by default; the UI can explicitly allow an invalid/self-signed certificate. Use loopback when detected for local HTTP traffic.
 - The real frontend root and real PHP-FPM/Apache process user. Do not guess them: inspect the active web/PHP service configuration. The frontend root contains `zabbix.php`, `include/defines.inc.php` and `modules/`.
 - Your registered GitHub App and its **actual Client ID**. Configure it in the GitHub tab after installing the worker. No App, client secret, signing key or PAT is distributed.
 - A private destination repository and App/user write access. Never use the public source repository as a backup destination.
@@ -58,7 +58,10 @@ sudo bash scripts/install.sh \
 Replace all uppercase arguments and the path with verified local values. `--frontend-root` may be
 omitted only when package metadata identifies exactly one real frontend. Ambiguous/unknown layouts
 fail without selecting a random directory. The installer requires evidence of the local Zabbix server,
-rejects unrelated module/account targets and uses one fixed cron filename. Rerunning it upgrades code
+rejects unrelated module/account targets and uses one fixed cron filename and two managed systemd units.
+The installer enables immediate queue activation automatically; no per-server or frontend launch
+setting is needed. Hosts without running systemd fail the prerequisite check before installation.
+Rerunning it upgrades code
 without overwriting settings, tokens or checkouts; repeat the same arguments. No Zabbix core file is changed.
 An optional `--client-id ACTUAL_GITHUB_APP_CLIENT_ID` supplies the initial App configuration.
 Existing installer-provided IDs are reused, while a Client ID explicitly saved in the UI takes precedence.
@@ -80,13 +83,16 @@ Installation locations:
 | `/var/lib/zabbix-gitkeeper/private/` | Worker-only tokens, settings, Git checkouts, export staging and lock |
 | `/var/lib/zabbix-gitkeeper/queue/` | Atomic restricted requests; pending token submissions are unreadable by their PHP owner |
 | `/var/lib/zabbix-gitkeeper/public/status.json` | Worker-written, frontend-readable secret-free status |
-| `/var/log/zabbix-gitkeeper/cron.log` | Fixed-message startup failures in a worker-only directory |
+| `/var/log/zabbix-gitkeeper/cron.log` | Preserved logs from older direct-cron installations; current worker logs use the system journal |
+| `/etc/systemd/system/zabbix-gitkeeper.path` | Starts the worker when a finalized UI request appears |
+| `/etc/systemd/system/zabbix-gitkeeper.service` | Worker identity, command and serialization; logs in the system journal |
 
 ## Configure and synchronize
 
 In **Administration > GitKeeper > GitHub**, enter **GitHub App Client ID** and select **Save Client ID**.
 Use the Client ID shown in the App settings, not the numeric App ID. The worker saves it on the next
-cron tick and the field then shows the stored value. Device Flow must be enabled; this flow requires
+worker invocation and the field then shows the stored value. UI requests invoke it automatically;
+requests arriving during an export wait for that export to finish. Device Flow must be enabled; this flow requires
 neither a client secret nor a signing private key. For an organization-owned App, open that
 organization's Developer settings on GitHub. Changing the Client ID removes the previous local GitHub
 authorization and pending device code, clears the repository selection and stops scheduling. Reconnect
@@ -112,7 +118,8 @@ and choose an accessible private repository. Saving the same ID keeps the connec
    **API tokens** page. This first iteration requires a Super admin token: a Super-admin-only
    `authentication.get` probe prevents a restricted account's partial visibility being treated as complete.
    The role must allow API calls for each selected collector and `configuration.export`.
-2. Wait for the next cron tick, normally within one minute, and check **Zabbix API > Worker status /
+2. Verification starts automatically after submission; if another operation is running, wait for it
+   to finish. Check **Zabbix API > Worker status /
    Last error**. Successful verification shows **Configured**. Tokens never reappear in the UI.
    The persistent result panel distinguishes **Token verification queued**, **Verifying the token**,
    **Token verified and saved** and **Token verification failed**. Creation alone does not finish setup.
@@ -169,11 +176,13 @@ revocation on GitHub remains available in account settings.
 ## Diagnose failures and uninstall
 
 The UI reads actual status and category results. Missing status usually indicates cron, permissions or
-installation problems. Check PHP's supplementary groups and the actual cron service. As root, a safe
-manual tick is:
+installation problems. Check PHP's supplementary groups, the queue watcher and the actual cron service.
+As root, start a manual tick through the same service:
 
 ```sh
-sudo -u gitkeeper /opt/zabbix-gitkeeper/venv/bin/gitkeeper --config /etc/zabbix-gitkeeper/worker.json
+sudo systemctl start --no-block zabbix-gitkeeper.service
+sudo systemctl status zabbix-gitkeeper.path zabbix-gitkeeper.service
+sudo journalctl -u zabbix-gitkeeper.service -n 50 --no-pager
 ```
 
 Network/rate-limit failures use bounded retries/backoff; rejected permissions, unclassified fields,
@@ -187,7 +196,8 @@ Inspect the declared coverage/policy to diagnose unsupported fields, without upl
 sudo bash scripts/uninstall.sh
 ```
 
-Uninstall refuses to run while the worker holds the lock. It removes cron, worker and the verified
+Uninstall refuses to run while the worker holds the lock. It disables/removes the queue watcher and
+service, then removes cron, worker and the verified
 module directory, and preserves credentials, queues, repositories, state, logs and the system account.
 Disable/remove the module record in Zabbix and revoke unused tokens/authorizations. No purge option is provided.
 

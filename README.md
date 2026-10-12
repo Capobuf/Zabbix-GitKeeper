@@ -36,7 +36,7 @@ A successful Git export **does not** by itself mean that a fresh Zabbix installa
 
 ### 1. Install and activate
 
-Install the release package on a supported Linux host that runs both the Zabbix server and frontend. The installer places the PHP module in the **existing Zabbix frontend `modules/` directory**, installs the worker and creates a cron entry. In **Administration → General → Modules**, the administrator scans the directory and enables **Zabbix GitKeeper**.
+Install the release package on a supported Linux host that runs both the Zabbix server and frontend, with systemd running. The installer places the PHP module in the **existing Zabbix frontend `modules/` directory**, installs the worker, enables the systemd queue watcher and creates a cron entry. In **Administration → General → Modules**, the administrator scans the directory and enables **Zabbix GitKeeper**.
 
 This is the supported Zabbix module registration flow, **not** a claim that Zabbix can upload and install arbitrary ZIP modules directly from its web UI. Split frontend/server deployments require a separately designed installation mode and must not be treated as local installations.
 
@@ -86,7 +86,7 @@ The administrator selects the cadence for **Git snapshots** (suggested default: 
 
 - Validate GitHub access, repository privacy/write permission, Zabbix API access and the requested categories.
 - Save settings and enqueue the **first sync automatically**.
-- The local worker is awakened by a **one-minute cron tick**, so first sync starts on the next tick; the UI shows `Queued` → `Running` → `Completed` / `Failed`, without requiring a browser request to remain open.
+- UI requests awaken the worker immediately through a native **systemd path unit**. A **one-minute cron tick** starts the same service for scheduled work; requests arriving during an export wait until it finishes. The UI shows `Queued` → `Running` → `Completed` / `Failed`, without requiring a browser request to remain open.
 - Display **last attempt**, **last successful complete snapshot**, **last Git commit**, **next scheduled run**, **category results** and **warnings/errors**.
 - Show useful actionable errors (auth revoked, API permission denied, repo protected, rate limited, incomplete export, missing recovery key, archive too large), with secrets removed.
 - Retrying an unsuccessful run must not overwrite or delete the previous valid snapshot.
@@ -110,7 +110,7 @@ The page must visibly distinguish:
 Zabbix frontend (native PHP module)
   └─ GitKeeper settings, GitHub authorization UI, status and restore guidance
        └─ local restricted command queue + status files
-            └─ cron (every minute)
+            └─ systemd service (queue watcher immediately, cron every minute)
                  └─ Python worker (runs only when a job is pending/due)
                       ├─ Zabbix JSON-RPC API → normalized snapshots
                       ├─ native Git client → commits and push
@@ -121,7 +121,7 @@ Zabbix frontend (native PHP module)
 
 - **PHP module:** official Zabbix module manifest, action/controller/view structure, registered menu entry and access controls. No core patches.
 - **Python worker:** local virtual environment; prefer the official `zabbix-utils` library; use system `git`. No Docker, long-lived worker, webhook endpoint or required external orchestration service.
-- **Scheduling:** one lightweight minute-based cron entry reads configured intervals and queued manual actions. Use a single-instance lock, bounded retries and backoff.
+- **Scheduling:** a systemd path unit starts queued UI actions immediately; a minute-based cron entry starts the same oneshot service for periodic checks. Use a single-instance lock, bounded retries and backoff. Running systemd is an installation prerequisite.
 - **Communication:** small local, atomic, permission-controlled request/status files (or another equally simple, audited local IPC mechanism). The PHP web process must **not** run arbitrary shell commands or obtain database root credentials.
 - **State:** separate operational state from versioned data. The worker's credentials, locks and logs must remain outside the frontend document root and Git working tree.
 - **Zabbix API:** dedicated account/token with the smallest working Zabbix role. Some categories may need Super admin access; surface those privilege requirements explicitly rather than silently skipping them. Never store a Zabbix login password when a properly scoped API token is sufficient.
