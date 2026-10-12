@@ -153,6 +153,43 @@ class CoreTests(unittest.TestCase):
         data = [{"type": "MULTIPLIER"}, {"type": "RTRIM"}]
         self.assertEqual(sanitize(data, "preprocessing", set()), data)
 
+    def test_custom_intervals_context_macros_and_safe_scalar_errors(self):
+        interval = "1h;wd1-5h9-18;{$FLEX_INTERVAL}/1-7,00:00-24:00;0/6-7,12:00-24:00"
+        for version in ("7.0.0", "7.4.15"):
+            with self.subTest(version=version):
+                api = FakeAPI(version)
+                api.delay = interval
+                with tempfile.TemporaryDirectory() as directory:
+                    stage = Path(directory)
+                    Exporter({}, api).export(["hosts", "templates"], stage)
+                    for family, object_id in (("hosts", "1"), ("templates", "10")):
+                        data = read_json(stage / family / f"{object_id}.json")
+                        self.assertEqual(data[family][0]["items"][0]["delay"], interval)
+                api.delay = "1m;\n" + SENTINEL
+                with tempfile.TemporaryDirectory() as directory:
+                    stage = Path(directory)
+                    with self.assertRaises(Error) as result:
+                        Exporter({}, api).export(["templates"], stage)
+                    self.assertIn("Cannot export templates (Zabbix " + version[:3] + ")", str(result.exception))
+                    self.assertIn("/templates[]/items[]/delay", str(result.exception))
+                    self.assertNotIn(SENTINEL, str(result.exception))
+                    self.assertFalse((stage / "manifest.json").exists())
+        period = "1-5,09:00-18:00;6-7,10:00-12:00"
+        self.assertEqual(sanitize({"period": period}, "user_media", set()), {"period": period})
+        for context in ("item", "discovery"):
+            for field in ("delay", "timeout", "history", "trends", "lifetime", "enabled_lifetime"):
+                for macro in ('{$INTERVAL:"' + SENTINEL + '"}', '{$INTERVAL:' + SENTINEL + '}',
+                              '{$INTERVAL: "a\\"' + SENTINEL + '"}', '{$INTERVAL: "{#ID}"}'):
+                    with self.subTest(context=context, field=field, macro=macro):
+                        excluded = set()
+                        self.assertEqual(sanitize({field: macro}, context, excluded), {field: OMITTED})
+                        self.assertEqual(excluded, {"/" + field})
+        for data in ({"status": "0;1"}, {"delay": '1m;"' + SENTINEL + '"'},
+                     {"timeout": {"value": SENTINEL}}):
+            with self.assertRaises(Error) as result:
+                sanitize(data, "item", set())
+            self.assertNotIn(SENTINEL, str(result.exception))
+
     def test_native_host_prototype_group_links_and_safe_policy_error(self):
         for version in ("7.0.0", "7.4.15"):
             with self.subTest(version=version):

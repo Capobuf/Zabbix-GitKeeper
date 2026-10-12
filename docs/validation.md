@@ -233,6 +233,23 @@ change is performed by this command.
 - Tests and the next actual synchronization are left to the user, as requested. This diagnosis and
   correction do not establish a completed end-to-end snapshot.
 
+## Scheduling syntax and contextual macros, 2026-10-12
+
+- Installed status showed a templates failure with `Unexpected control or scheduling value in export`.
+  Read-only structural inspection of 364 native template responses identified semicolons in 49
+  item/prototype delays, plus quotes in 29 delay/timeout values. A metadata-only follow-up confirmed
+  all 29 quoted values reference contextual user macros. No values, credentials or template names
+  were printed; no worker request, snapshot or Git push was triggered by these inspections.
+- The generic scalar character filter rejected Zabbix's documented custom intervals and quoted macro
+  contexts. Added an explicit schedule rule for item/discovery/prototype delays and user-media periods.
+  Contextual macros in scalar/schedule values are omitted with an exclusion path, consistently for
+  quoted and unquoted contexts. Other control fields retain the stricter punctuation restriction.
+- Scalar syntax/type failures now use the safe policy error, carrying category, reviewed series and
+  the schema field path without reflecting its value. Added fixtures for both target series, custom
+  intervals, time periods, contextual macro redaction and rejection without a success manifest.
+- Tests and the next actual synchronization remain assigned to the user. The updated policy has not
+  yet been verified by a completed live snapshot.
+
 ## Earlier automated checks
 
 Executed successfully on 2026-10-11:

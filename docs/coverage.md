@@ -41,6 +41,16 @@ snapshot; the public error identifies the category, reviewed Zabbix series and c
 without echoing unknown field names or API values. This indicates a GitKeeper policy gap rather than
 asking the administrator to change their Zabbix configuration.
 
+Update intervals and user-media periods preserve semicolon-separated schedules, as documented for
+[item intervals](https://www.zabbix.com/documentation/7.4/en/manual/api/reference/item/object) and
+[time periods](https://www.zabbix.com/documentation/7.4/en/manual/appendix/time_period).
+Ordinary durations and context-free macro references remain tracked. Control/time values containing
+[contextual user macros](https://www.zabbix.com/documentation/7.4/en/manual/config/macros/user_macros_context)
+are omitted in full and listed in `excluded_fields`, since those contexts can contain arbitrary text.
+Quoted, unquoted and escaped contexts do not stop an export merely because of their punctuation.
+This applies to the common 7.0/7.4 policy, including discovery rules and item prototypes.
+Unsupported scalar syntax/type errors report the category and reviewed schema path without the value.
+
 The matrix above describes the original synthetic-fixture baseline; the partial live results are
 recorded separately in [validation](validation.md), without certifying an entire series. The policy
 was reviewed against official 7.0/7.4 API and exporter sources. Future support declarations require

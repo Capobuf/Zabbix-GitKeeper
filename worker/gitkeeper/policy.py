@@ -22,14 +22,14 @@ def rule(identity="", scalar="", redact="", children=None):
             **{k: "redact" for k in redact.split()}, **(children or {})}
 
 
-ITEM = rule("uuid name interface_ref", "type value_type delay history trends status discover inventory_link "
+ITEM = rule("uuid name interface_ref", "type value_type history trends status discover inventory_link "
             "authtype timeout post_type status_codes follow_redirects retrieve_mode request_method "
             "output_format allow_traps verify_peer verify_host lifetime lifetime_type enabled_lifetime "
             "enabled_lifetime_type", "key snmp_oid allowed_hosts params ipmi_sensor username password "
             "publickey privatekey description jmx_endpoint url query_fields parameters posts http_proxy "
             "headers ssl_cert_file ssl_key_file ssl_key_password logtimefmt units parent_discovery_rule",
             {"tags": "tags", "preprocessing": "preprocessing", "valuemap": "reference", "master_item": "master",
-             "triggers": "trigger", "trigger_prototypes": "trigger"})
+             "triggers": "trigger", "trigger_prototypes": "trigger", "delay": "schedule"})
 TRIGGER = rule("uuid name", "recovery_mode correlation_mode type status priority manual_close discover",
                "expression recovery_expression correlation_tag description event_name opdata url url_name",
                {"tags": "tags", "dependencies": "dependency"})
@@ -89,7 +89,7 @@ SCHEMAS = {
     "user": rule("userid username name surname roleid", "autologin autologout lang refresh theme rows_per_page "
                  "userdirectoryid ts_provisioned", "url", {"usrgrps": "user_group_ref", "medias": "user_media"}),
     "user_group_ref": rule("usrgrpid"),
-    "user_media": rule("mediaid mediatypeid", "active severity period", "sendto"),
+    "user_media": rule("mediaid mediatypeid", "active severity", "sendto", {"period": "schedule"}),
     "user_group": rule("usrgrpid name", "gui_access users_status debug_mode userdirectoryid mfa_status mfaid",
                        "", {"hostgroup_rights": "right", "templategroup_rights": "right", "tag_filters": "tag_filter"}),
     "right": rule("id", "permission"), "tag_filter": rule("groupid tag", "", "value"),
@@ -133,11 +133,21 @@ def sanitize(value, context: str, excluded: set[str], path: str = "", collection
             excluded.add(field_path)
             result[key] = UNREADABLE if context == "macro" and key == "value" and str(value.get("type")) in (
                 "1", "2", "SECRET_TEXT", "VAULT") else OMITTED
-        elif policy in ("identity", "scalar"):
+        elif policy in ("identity", "scalar", "schedule"):
             if not isinstance(item, (str, int, float, bool)) or item is None:
-                raise Error("Unexpected export scalar type.")
-            if policy == "scalar" and not re.fullmatch(r"[A-Za-z0-9_.,+{}#$:/ -]*", str(item)):
-                raise Error("Unexpected control or scheduling value in export.")
+                raise PolicyError(f"Unexpected scalar type at {field_path} (schema: {context}); snapshot stopped.")
+            if policy != "identity":
+                # Contexts are arbitrary text, even when referenced by control/time fields.
+                # Omit the entire value rather than publish a potentially sensitive context.
+                if re.search(r"\{\$[A-Za-z0-9_.]+:", str(item)):
+                    excluded.add(field_path)
+                    result[key] = OMITTED
+                    continue
+                pattern = r"[A-Za-z0-9_.,+{}#$:;/ -]*" if policy == "schedule" else r"[A-Za-z0-9_.,+{}#$:/ -]*"
+                if not re.fullmatch(pattern, str(item)):
+                    raise PolicyError(f"Unsupported control or scheduling value at {field_path} "
+                                      f"(schema: {context}); snapshot stopped. GitKeeper's export policy "
+                                      "must be updated for this syntax.")
             result[key] = item
         else:
             result[key] = sanitize(item, policy, excluded, field_path, key)
