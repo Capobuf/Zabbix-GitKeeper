@@ -23,6 +23,8 @@ jobs:
           php tests/frontend.php
           bash -n scripts/install.sh scripts/uninstall.sh
           shellcheck scripts/install.sh scripts/uninstall.sh tests/install-smoke.sh
+      - name: Frontend polling regression
+        run: node tests/frontend-poll.cjs
       - name: Package
         run: python -m build worker
       - name: Installer smoke test (isolated fixture, not a live Zabbix server)

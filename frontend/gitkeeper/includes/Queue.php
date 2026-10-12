@@ -27,8 +27,12 @@ final class Queue {
     public static function validate(string $operation, array $params): void {
         $allowed = ['connect' => [], 'disconnect' => [], 'repositories' => [], 'test_github' => [],
             'sync' => [], 'clear_zabbix' => [], 'save' => ['settings'],
-            'set_zabbix' => ['url', 'token'], 'create_repository' => ['name']];
+            'set_zabbix' => ['url', 'token'], 'create_repository' => ['name'],
+            'set_github_app' => ['client_id'], 'select_repository' => ['repository_id']];
         $keys = array_keys($params);
+        if ($operation === 'create_repository' && array_key_exists('owner', $params)) {
+            $keys = array_diff($keys, ['owner']);
+        }
         sort($keys);
         if (!isset($allowed[$operation])) {
             throw new RuntimeException('Unsupported operation.');
@@ -59,9 +63,20 @@ final class Queue {
                 throw new RuntimeException('Invalid API token format.');
             }
         }
+        elseif ($operation === 'set_github_app'
+                && (!is_string($params['client_id']) || !preg_match('/^[A-Za-z0-9_.-]{4,128}$/D', $params['client_id']))) {
+            throw new RuntimeException('Enter the GitHub App Client ID from its settings page.');
+        }
         elseif ($operation === 'create_repository'
                 && (!is_string($params['name']) || !preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/D', $params['name']))) {
             throw new RuntimeException('Invalid repository name.');
+        }
+        if ($operation === 'create_repository' && array_key_exists('owner', $params)
+                && (!is_string($params['owner']) || !preg_match('/^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/D', $params['owner']))) {
+            throw new RuntimeException('Enter a GitHub account or organization name.');
+        }
+        if ($operation === 'select_repository' && (!is_int($params['repository_id']) || $params['repository_id'] <= 0)) {
+            throw new RuntimeException('Select an authorized private repository.');
         }
     }
 

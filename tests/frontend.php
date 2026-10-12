@@ -27,8 +27,11 @@ class CController {
 class CControllerResponseFatal {}
 class CControllerResponseRedirect {
     public function __construct($url) {}
-    public function setMessageOk($message) {}
-    public function setMessageError($message) {}
+}
+class CMessageHelper {
+    public static string $error = '';
+    public static function setSuccessTitle($message) {}
+    public static function setErrorTitle($message) { self::$error = $message; }
 }
 class CUrl {
     public function __construct($url) {}
@@ -43,13 +46,34 @@ require __DIR__.'/../frontend/gitkeeper/actions/Save.php';
 require __DIR__.'/../frontend/gitkeeper/actions/View.php';
 require __DIR__.'/../frontend/gitkeeper/actions/Status.php';
 use Modules\GitKeeper\Queue;
+use Modules\GitKeeper\Installation;
+
+foreach ([
+    'https://monitor.example/monitor/' => 'https://monitor.example/monitor/api_jsonrpc.php',
+    'http://172.16.100.7/zabbix/' => 'http://172.16.100.7/zabbix/api_jsonrpc.php',
+    'https://monitor.example:8443/zabbix.php' => 'https://monitor.example:8443/api_jsonrpc.php',
+    'https://monitor.example/api_jsonrpc.php' => 'https://monitor.example/api_jsonrpc.php',
+    'https://user:password@monitor.example/' => '',
+    'https://monitor.example/?token=secret' => '',
+    'https://monitor.example/#secret' => '',
+    '/zabbix/' => ''
+] as $frontend_url => $expected) {
+    ensure(Installation::apiUrl($frontend_url) === $expected, 'Incorrect derived endpoint');
+}
 
 $valid = ['settings' => ['repository_id' => 42, 'interval' => 15, 'categories' => ['hosts']]];
 Queue::validate('save', $valid);
+Queue::validate('set_github_app', ['client_id' => 'Iv1.fixture']);
+Queue::validate('select_repository', ['repository_id' => 42]);
+Queue::validate('create_repository', ['name' => 'backup', 'owner' => 'Test-Organization']);
 foreach ([['shell', []], ['sync', ['command' => 'bad']], ['save', ['settings' => ['repository_id' => 42,
         'interval' => 1, 'categories' => ['hosts']]]], ['save', ['settings' => ['repository_id' => 42,
         'interval' => 15, 'categories' => ['restore']]]], ['set_zabbix', ['url' => 'http://example/api_jsonrpc.php',
-        'token' => str_repeat('a', 64)]]] as [$op, $params]) {
+        'token' => str_repeat('a', 64)]], ['set_github_app', ['client_id' => '$(bad)']],
+        ['set_github_app', ['client_id' => 'Iv1.fixture', 'client_secret' => 'bad']],
+        ['select_repository', ['repository_id' => 0]], ['select_repository', ['repository_id' => '42']],
+        ['create_repository', ['name' => 'backup', 'owner' => '../org']],
+        ['create_repository', ['name' => 'backup', 'owner' => 'org', 'token' => 'bad']]] as [$op, $params]) {
     $rejected = false;
     try { Queue::validate($op, $params); }
     catch (Throwable $e) { $rejected = true; }
@@ -68,6 +92,7 @@ foreach (['Save', 'View', 'Status'] as $name) {
         $controller->input = ['operation' => 'create_zabbix_token', 'api_url' => 'https://example/api_jsonrpc.php'];
         (new ReflectionMethod($class, 'doAction'))->invoke($controller);
         ensure(API::$calls === 0, 'Token created without explicit consent');
+        ensure(CMessageHelper::$error !== '', 'Rejection did not use the native message helper');
     }
 }
 $root = sys_get_temp_dir().'/gitkeeper-php-'.bin2hex(random_bytes(8));

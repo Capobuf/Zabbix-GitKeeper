@@ -1,7 +1,8 @@
 # Experimental installation and first snapshot
 
 This implementation targets Linux with Zabbix server and frontend on the same machine.
-Zabbix **7.0 and 7.4 are targets, not certified versions**: neither has been exercised against a live server.
+Zabbix **7.0 and 7.4 are targets, not certified versions**. Frontend and partial read-only collector
+checks have run against Zabbix 7.4.15; the full installation/OAuth/cron/publishing flow is unverified.
 There is no stable release or selected project license. Use a disposable instance for acceptance testing.
 
 ## Prerequisites
@@ -9,15 +10,16 @@ There is no stable release or selected project license. Use a disposable instanc
 - Python 3.10+ with `venv`/pip, system Git, frontend-compatible PHP (8.0+), cron reading `/etc/cron.d`, and standard Linux account/filesystem tools.
 - A working Zabbix HTTPS JSON-RPC URL with a certificate trusted by Python. For a local CA, install it in the system trust store. Certificate validation cannot be disabled through the UI.
 - The real frontend root and real PHP-FPM/Apache process user. Do not guess them: inspect the active web/PHP service configuration. The frontend root contains `zabbix.php`, `include/defines.inc.php` and `modules/`.
-- A maintainer-registered GitHub App and its **actual Client ID**. No App, client secret, signing key or PAT is distributed.
+- Your registered GitHub App and its **actual Client ID**. Configure it in the GitHub tab after installing the worker. No App, client secret, signing key or PAT is distributed.
 - A private destination repository and App/user write access. Never use the public source repository as a backup destination.
 
 ## Register the GitHub App
 
 In GitHub developer settings, create/configure a GitHub App and enable **Device Flow**.
 Enable user access-token expiration. Set repository **Metadata: read**, **Contents: read/write**.
-If personal-account repository creation is wanted, grant account **Repository creation: write**;
-the UI also provides the GitHub creation-page fallback. Organization creation is not implemented.
+For direct repository creation, grant **Repository creation: write** where GitHub requires it;
+the UI supports personal and organization destinations and provides a native GitHub creation-page fallback.
+The authenticated account must be permitted to create repositories in the chosen organization.
 Install the App on the destination account and grant access to the selected repository.
 User authorization and installation are separate requirements. A selected-repositories installation
 may require explicitly adding a newly created repository before it appears in GitKeeper.
@@ -33,14 +35,22 @@ Official references: [Device Flow](https://docs.github.com/en/apps/creating-gith
 
 ## Install from this branch
 
+When the frontend module is already enabled and the worker is unavailable, **GitKeeper > Overview**
+shows a read-only installation command with a **Copy** button. It uses the actual frontend path and
+PHP process user, downloads the experimental foundation branch into a fresh temporary directory,
+and invokes the existing installer. Paste it into a Bash terminal on the Zabbix server; the command
+stops on the first error. Configure the Client ID in the GitHub tab afterward. Install the prerequisites
+listed above first, and restart the actual PHP service afterward. If PHP cannot detect its process
+identity, use the manual instructions below rather than a guessed user.
+The command downloads the published branch; unpushed local edits are not included.
+
 Clone the source on the test Zabbix VM, then run from its root:
 
 ```sh
 git switch feat/gitkeeper-foundation
 sudo bash scripts/install.sh \
   --frontend-root /absolute/path/to/the/real/zabbix/frontend \
-  --web-user ACTUAL_PHP_PROCESS_USER \
-  --client-id ACTUAL_GITHUB_APP_CLIENT_ID
+  --web-user ACTUAL_PHP_PROCESS_USER
 ```
 
 Replace all uppercase arguments and the path with verified local values. `--frontend-root` may be
@@ -48,6 +58,8 @@ omitted only when package metadata identifies exactly one real frontend. Ambiguo
 fail without selecting a random directory. The installer requires evidence of the local Zabbix server,
 rejects unrelated module/account targets and uses one fixed cron filename. Rerunning it upgrades code
 without overwriting settings, tokens or checkouts; repeat the same arguments. No Zabbix core file is changed.
+An optional `--client-id ACTUAL_GITHUB_APP_CLIENT_ID` supplies the initial App configuration.
+Existing installer-provided IDs are reused, while a Client ID explicitly saved in the UI takes precedence.
 Python and package installation require outbound access to the package index.
 
 Restart the **actual PHP-FPM/Apache service** to load its new `gitkeeper-ui` supplementary group;
@@ -62,6 +74,7 @@ Installation locations:
 | Detected frontend `modules/gitkeeper/` | Root-owned PHP module; never writable by PHP |
 | `/opt/zabbix-gitkeeper/venv/` | Root-owned Python worker and pinned `zabbix-utils` |
 | `/etc/zabbix-gitkeeper/worker.json` | Client ID and installation paths; root/worker readable |
+| `/var/lib/zabbix-gitkeeper/private/github-app.json` | App Client ID saved from the UI; worker-owned and preserved on upgrades |
 | `/var/lib/zabbix-gitkeeper/private/` | Worker-only tokens, settings, Git checkouts, export staging and lock |
 | `/var/lib/zabbix-gitkeeper/queue/` | Atomic restricted requests; pending token submissions are unreadable by their PHP owner |
 | `/var/lib/zabbix-gitkeeper/public/status.json` | Worker-written, frontend-readable secret-free status |
@@ -69,20 +82,41 @@ Installation locations:
 
 ## Configure and synchronize
 
-1. In **Zabbix API access**, enter the HTTPS `.../api_jsonrpc.php` URL.
+In **Administration > GitKeeper > GitHub**, enter **GitHub App Client ID** and select **Save Client ID**.
+Use the Client ID shown in the App settings, not the numeric App ID. The worker saves it on the next
+cron tick and the field then shows the stored value. Device Flow must be enabled; this flow requires
+neither a client secret nor a signing private key. For an organization-owned App, open that
+organization's Developer settings on GitHub. Changing the Client ID removes the previous local GitHub
+authorization and pending device code, clears the repository selection and stops scheduling. Reconnect
+and choose an accessible private repository. Saving the same ID keeps the connection and schedule.
+
+1. In **Zabbix API**, review the prefilled `.../api_jsonrpc.php` URL. GitKeeper uses the worker's
+   verified endpoint first, then the native Zabbix frontend URL setting, then the current page address.
+   Subdirectories and ports are preserved. An HTTP address stays HTTP and displays an HTTPS prerequisite;
+   GitKeeper does not guess a working HTTPS endpoint. The URL remains editable, and both token forms
+   share the same value. Only the verified endpoint is published in status; the token remains private.
    Supply an existing token, or explicitly check the permission-inheritance consent and select
-   **Create and verify native API token**. Native creation uses the current administrator's session
+   **Create and verify token**. Native creation uses the current administrator's session
    to call `token.create`/`token.generate`; cron never uses that browser session.
    The token is non-expiring and inherits that account's permissions. Review/revoke it in the native
    **API tokens** page. This first iteration requires a Super admin token: a Super-admin-only
    `authentication.get` probe prevents a restricted account's partial visibility being treated as complete.
    The role must allow API calls for each selected collector and `configuration.export`.
 2. Wait for the next cron tick and check that verification succeeds. Tokens never reappear in the UI.
-3. Select **Connect GitHub**, wait for the device code, open the verification link and authorize the App.
-   Grant installation access as well. The worker runs once per minute, even if the browser is closed.
-4. Refresh repositories if needed. Choose an accessible **private** initialized repository, or create
-   one with the UI/fallback. Direct creation is always private and initialized; the App must then be able to access it.
-5. Select implemented categories and 5, 15 (default), 30, 60 minutes or 24 hours. **Save & Sync** queues
+3. Select **Connect GitHub**, wait for the device code, open **Authorize on GitHub** and authorize your account.
+   Return to GitKeeper; the page checks the result automatically. App installation and repository access
+   are a separate step on GitHub. The worker runs once per minute, even if the browser is closed.
+4. In **GitHub**, refresh repositories to see the accessible private repositories, their write access and default
+   branch. Select one and click **Use repository**; the only accessible repository is preselected when there is
+   no saved choice. Selection can be saved before Zabbix API setup and does not start an export. Changing the
+   destination pauses the previous schedule until **Save & Sync**.
+   Alternatively, enter the owner (prefilled from the selected repository or connected account) and a name,
+   then click **Create and select private repository**. Personal and organization creation uses GitHub's native
+   REST endpoints. Creation is always private and initialized; the new repository is selected only after App
+   access is verified. If it was created but the App cannot access it, grant installation access and refresh;
+   do not retry creation of the same name. The native GitHub creation page remains available as a fallback.
+5. Saved settings take precedence. First setup selects all categories supported by the installed worker
+   and uses the explicit 15-minute default. Adjust the categories or select 5, 15, 30, 60 minutes or 24 hours. **Save & Sync** queues
    settings validation and the first export. Watch **Queued → Running → Completed**, or the error/partial result.
 6. Inspect `gitkeeper/manifest.json` and category JSON files on the repository's default branch.
    Run **Sync now** without a configuration change: the commit SHA should stay the same.
@@ -94,6 +128,13 @@ implemented. Configure suitable branch protection before testing; a protection r
 does not bypass GitHub rules. Only the `gitkeeper/` area is managed; foreign files cause a refusal to delete it.
 Secret/payload-only changes intentionally produce no diff. This is tracking of the documented readable
 scope, not a complete backup or directly importable native export.
+
+The GitHub tab separates App configuration, account authorization and repository selection into three
+numbered steps. **Refresh repositories** is beside the destination list; **Connect GitHub** is hidden
+when connected or awaiting authorization. Empty-list guidance explains App installation/access without
+suggesting that account authorization failed. Overview shows the next incomplete setup step, also shown
+in Configuration when synchronization is unavailable. Native notifications describe the requested
+operation; a submission notification is not confirmation that the worker completed it.
 
 **Replace/revoke tokens:** submit a new existing API token to replace the worker copy, or select
 **Remove stored API token** to stop scheduling and delete the worker copy. Then revoke the old token in

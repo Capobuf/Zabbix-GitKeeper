@@ -1,7 +1,42 @@
 /* Read-only polling; mutations use native forms and the Zabbix CSRF token. */
 document.addEventListener('DOMContentLoaded', () => {
     if (!document.getElementById('gitkeeper-overview')) return;
-    let previous = document.getElementById('gitkeeper-overview').dataset.fingerprint;
+    const apiUrls = ['gitkeeper-bootstrap-url', 'gitkeeper-existing-url'].map(id => document.getElementById(id));
+    const apiSource = document.getElementById('gitkeeper-api-url-source');
+    const apiWarning = document.getElementById('gitkeeper-api-url-warning');
+    if (!apiUrls[0].value) {
+        const detected = new URL('api_jsonrpc.php', window.location.href).href;
+        apiUrls.forEach(input => { input.value = detected; });
+        apiSource.textContent = apiSource.dataset.currentLabel;
+    }
+    const updateApiWarning = () => {
+        apiWarning.textContent = apiUrls[0].value.startsWith('http:')
+            ? apiWarning.dataset.httpWarning : '';
+    };
+    updateApiWarning();
+    apiUrls.forEach(input => input.addEventListener('input', () => {
+        apiUrls.forEach(other => { if (other !== input) other.value = input.value; });
+        apiSource.textContent = apiSource.dataset.customLabel;
+        updateApiWarning();
+    }));
+    const copy = document.getElementById('gitkeeper-copy-install');
+    if (copy) {
+        copy.addEventListener('click', async () => {
+            const command = document.getElementById('gitkeeper-install-command');
+            const result = document.getElementById('gitkeeper-copy-result');
+            try {
+                await writeTextClipboard(command.value);
+                result.textContent = result.dataset.copied;
+            } catch (_) {
+                command.focus();
+                command.select();
+                result.textContent = result.dataset.fallback;
+            }
+        });
+    }
+    // PHP escapes URL slashes in JSON; compare normalized values to avoid reloading
+    // every poll while a device authorization URL is present.
+    let previous = JSON.stringify(JSON.parse(document.getElementById('gitkeeper-overview').dataset.fingerprint));
     let dirty = false;
     document.addEventListener('input', () => { dirty = true; });
     document.addEventListener('change', () => { dirty = true; });
@@ -22,14 +57,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 window.location.reload();
                 return;
             }
-            previous = fingerprint;
+            // Keep the rendered fingerprint until reload. A change observed while an
+            // input has focus must still trigger refresh once focus leaves the form.
             for (const key of ['state', 'github', 'account', 'error']) {
-                const element = document.getElementById('gitkeeper-' + key);
-                if (element) element.textContent = state[key] ?? '-';
+                for (const prefix of ['gitkeeper-', 'gitkeeper-connection-']) {
+                    const element = document.getElementById(prefix + key);
+                    if (element) element.textContent = key === 'github' && prefix === 'gitkeeper-connection-'
+                        ? (state.github === 'Ready' ? element.dataset.connected
+                            : state.device ? element.dataset.pending : element.dataset.disconnected)
+                        : state[key] ?? '-';
+                }
             }
         } catch (_) {
-            const element = document.getElementById('gitkeeper-error');
-            if (element) element.textContent = 'Status unavailable. Reload the page and check your session.';
+            for (const id of ['gitkeeper-error', 'gitkeeper-connection-error']) {
+                const element = document.getElementById(id);
+                if (element) element.textContent = 'Status unavailable. Reload the page and check your session.';
+            }
         }
         setTimeout(poll, 5000);
     }

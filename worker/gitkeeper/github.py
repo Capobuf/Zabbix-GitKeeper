@@ -40,6 +40,9 @@ def request(url: str, method: str = "GET", data=None, token: str | None = None):
             raise Error("GitHub response exceeds safety limit.")
         return json.loads(raw)
     except urllib.error.HTTPError as exc:
+        if url == 'https://github.com/login/device/code' and exc.code in (401, 404):
+            raise Error(f"GitHub refused device authorization (HTTP {exc.code}). "
+                        "Check the App Client ID (not App ID) and enable Device Flow in the App settings.") from None
         if exc.code == 401:
             raise Reconnect("GitHub authorization expired or revoked. Reconnect GitHub.") from None
         if exc.code == 429 or exc.code >= 500:
@@ -59,6 +62,10 @@ class GitHub:
 
     def connect(self) -> dict:
         data = request("https://github.com/login/device/code", "POST", {"client_id": self.client_id})
+        if data.get("error") == "device_flow_disabled":
+            raise Error("Enable Device Flow in your GitHub App settings before connecting.")
+        if data.get("error") == "incorrect_client_credentials":
+            raise Error("GitHub rejected the Client ID. Copy the Client ID, not the App ID, from the App settings.")
         if not all(k in data for k in ("device_code", "user_code", "verification_uri", "expires_in", "interval")):
             raise Error("GitHub App device flow is not configured.")
         if data["verification_uri"] != "https://github.com/login/device":
@@ -190,8 +197,10 @@ class GitHub:
             raise Error("The source repository cannot be used as a backup destination.")
         return repo
 
-    def create_repository(self, name: str) -> dict:
-        repo = self.api("/user/repos", "POST", {"name": name, "private": True, "auto_init": True})
+    def create_repository(self, name: str, owner: str | None = None) -> dict:
+        personal = owner is None or owner.lower() == self.api("/user")["login"].lower()
+        endpoint = "/user/repos" if personal else f"/orgs/{owner}/repos"
+        repo = self.api(endpoint, "POST", {"name": name, "private": True, "auto_init": True})
         try:
             return self.repository(int(repo["id"]))
         except Error:

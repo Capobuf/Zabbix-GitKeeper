@@ -79,7 +79,7 @@ if [[ -f /etc/zabbix-gitkeeper/worker.json ]]; then
     PREVIOUS=$(python3 -c 'import json; print(json.load(open("/etc/zabbix-gitkeeper/worker.json"))["module_dir"])')
     [[ $PREVIOUS == "$MODULES/gitkeeper" ]] || die 'Existing module path differs. Uninstall before moving the frontend.'
 fi
-[[ $CLIENT_ID =~ ^[A-Za-z0-9_.-]{4,128}$ ]] || die 'Pass the real GitHub App --client-id; no default App is distributed.'
+[[ -z $CLIENT_ID || $CLIENT_ID =~ ^[A-Za-z0-9_.-]{4,128}$ ]] || die 'Invalid GitHub App --client-id.'
 
 getent group gitkeeper >/dev/null || groupadd --system gitkeeper
 getent group gitkeeper-ui >/dev/null || groupadd --system gitkeeper-ui
@@ -139,5 +139,6 @@ chmod 0644 /etc/cron.d/.zabbix-gitkeeper.tmp
 mv -f /etc/cron.d/.zabbix-gitkeeper.tmp /etc/cron.d/zabbix-gitkeeper
 printf '%s\n' 'Installed. Restart PHP-FPM/Apache to pick up group membership.' \
     'In Administration > General > Modules: Scan directory, then enable Zabbix GitKeeper.' \
-    'Open Administration > GitKeeper. Configure HTTPS API access, connect/install the GitHub App, select a private repository and Save & Sync.' \
+    'Open Administration > GitKeeper > GitHub and save your GitHub App Client ID if not supplied during installation.' \
+    'Configure HTTPS API access, connect/install the GitHub App, select a private repository and Save & Sync.' \
     'Compatibility targets: 7.0 and 7.4; no live Zabbix integration is certified yet.'

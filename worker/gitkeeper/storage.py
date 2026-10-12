@@ -86,7 +86,8 @@ def command(value: dict) -> dict:
     operations = {
         "connect": set(), "disconnect": set(), "repositories": set(), "test_github": set(),
         "sync": set(), "clear_zabbix": set(), "save": {"settings"},
-        "set_zabbix": {"url", "token"}, "create_repository": {"name"}
+        "set_zabbix": {"url", "token"}, "create_repository": {"name"}, "set_github_app": {"client_id"},
+        "select_repository": {"repository_id"}
     }
     if not isinstance(value, dict) or set(value) != {"id", "operation", "params"}:
         raise Error("Invalid request envelope.")
@@ -94,7 +95,7 @@ def command(value: dict) -> dict:
         raise Error("Invalid request ID.")
     op, params = value["operation"], value["params"]
     if (not isinstance(op, str) or op not in operations or not isinstance(params, dict)
-            or set(params) != operations[op]):
+            or (set(params) - ({"owner"} if op == "create_repository" else set())) != operations[op]):
         raise Error("Unsupported operation or parameters.")
     if op == "save":
         params["settings"] = settings(params["settings"])
@@ -102,7 +103,16 @@ def command(value: dict) -> dict:
         api_url(params["url"])
         if not isinstance(params["token"], str) or not re.fullmatch(r"[a-fA-F0-9]{64}", params["token"]):
             raise Error("Invalid Zabbix API token format.")
+    elif op == "set_github_app":
+        if not isinstance(params["client_id"], str) or not re.fullmatch(r"[A-Za-z0-9_.-]{4,128}", params["client_id"]):
+            raise Error("Enter the GitHub App Client ID from its settings page.")
     elif op == "create_repository":
         if not isinstance(params["name"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", params["name"]):
             raise Error("Invalid repository name.")
+        if "owner" in params and (not isinstance(params["owner"], str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,99}", params["owner"])):
+            raise Error("Enter a GitHub account or organization name.")
+    elif op == "select_repository":
+        if type(params["repository_id"]) is not int or params["repository_id"] <= 0:
+            raise Error("Select an authorized private repository.")
     return value
