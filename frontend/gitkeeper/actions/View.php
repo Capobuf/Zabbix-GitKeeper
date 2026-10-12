@@ -17,7 +17,7 @@ class View extends CController {
     }
 
     protected function checkInput(): bool {
-        return $this->validateInput(['api_request' => 'string']);
+        return $this->validateInput(['api_request' => 'string', 'sync_request' => 'string']);
     }
 
     protected function checkPermissions(): bool {
@@ -26,7 +26,7 @@ class View extends CController {
 
     protected function doAction(): void {
         try {
-            $status = (new Queue())->status($this->getInput('api_request', ''));
+            $status = (new Queue())->status($this->getInput('api_request', ''), $this->getInput('sync_request', ''));
         }
         catch (\Throwable $e) {
             $status = ['state' => 'Failed', 'error' => 'Cannot read worker status. Check installation.'];
@@ -43,7 +43,8 @@ class View extends CController {
         }
         $response = new CControllerResponseData(['status' => $status,
             'api_url' => $api_url, 'api_url_source' => $api_url_source,
-            'api_request' => $this->getInput('api_request', '')]);
+            'api_request' => $this->getInput('api_request', ''),
+            'sync_request' => $this->getInput('sync_request', '')]);
         $response->setTitle(_('GitKeeper'));
         $this->setResponse($response);
     }

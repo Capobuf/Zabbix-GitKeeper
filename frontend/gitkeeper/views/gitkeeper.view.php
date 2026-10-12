@@ -65,39 +65,23 @@ else {
     $next_step = _('Setup is complete. Use Sync now for a snapshot or Configuration to change the schedule.');
 }
 
-$sync_requirements = [];
-if (!$worker_ready) {
-    $sync_requirements[] = [_('Worker status is unavailable. Install the worker or check cron.'),
-        _('Open Overview'), 'gitkeeper-tab-overview'];
+$synchronization = $status['synchronization'] ?? Queue::synchronization($status);
+$sync_requirements = $synchronization['missing'];
+$sync_ready = $synchronization['ready'];
+$sync_busy = in_array($synchronization['state'], ['Queued', 'Saving', 'Running'], true);
+if ($synchronization['state'] !== 'Incomplete') {
+    $next_step = $synchronization['message'];
 }
-if (!$app_ready) {
-    $sync_requirements[] = [_('The GitHub App Client ID has not been saved.'),
-        _('Configure GitHub App'), 'gitkeeper-tab-github'];
-}
-if (!$github_ready) {
-    $sync_requirements[] = [_('GitHub authorization is not complete.'),
-        _('Connect GitHub'), 'gitkeeper-tab-github'];
-}
-if (!$selected_repository) {
-    $sync_requirements[] = [_('No accessible private repository has been selected.'),
-        _('Select a repository'), 'gitkeeper-tab-github'];
-}
-if (!$api_ready) {
-    $sync_requirements[] = [_('The Zabbix API token has not been configured and verified.'),
-        _('Configure Zabbix API'), 'gitkeeper-tab-api'];
-}
-if (empty($settings['categories']) || empty($settings['interval'])) {
-    $sync_requirements[] = [_('Backup categories and the export interval have not been saved. Click Save & Sync to save them and start the first snapshot.'),
-        _('Open Configuration'), 'gitkeeper-tab-configuration'];
-}
-$sync_ready = !$sync_requirements;
 
 $overview = (new CFormGrid())->setId('gitkeeper-overview');
+$overview->setAttribute('data-sync-request', $data['sync_request'] ?? '');
 $overview->setAttribute('data-fingerprint', json_encode([$status['last_request'] ?? null, $status['state'] ?? null,
     $status['device'] ?? null, $status['last_commit'] ?? null, $status['categories'] ?? null, $status['account'] ?? null]));
-$row($overview, _('Next step'), $next_step);
-$row($overview, _('Synchronization'), (new CSpan($sync_ready ? _('Configured') : _('Setup incomplete')))
-    ->addClass($sync_ready ? ZBX_STYLE_GREEN : ZBX_STYLE_RED));
+$row($overview, _('Next step'), (new CSpan($next_step))->setId('gitkeeper-next-step'));
+$row($overview, _('Synchronization'), (new CSpan($synchronization['label']))
+    ->setId('gitkeeper-synchronization')->setAttribute('role', 'status')
+    ->addClass(in_array($synchronization['state'], ['Incomplete', 'Failed'], true) ? ZBX_STYLE_RED
+        : ($sync_busy ? ZBX_STYLE_GREY : ZBX_STYLE_GREEN)));
 foreach (['state' => _('Worker status'), 'github' => _('GitHub'), 'account' => _('Account')] as $key => $label) {
     $row($overview, $label, (new CSpan($status[$key] ?? '-'))->setId('gitkeeper-'.$key));
 }
@@ -151,25 +135,23 @@ if (!empty($status['categories'])) {
     $overview_body[] = $table;
 }
 $sync_form = $form('sync');
-$sync_feedback = (new CSpan())->setId('gitkeeper-sync-feedback')->setAttribute('role', 'status')
-    ->setAttribute('data-submitting', _('Submitting snapshot request...'));
-if (!$sync_ready) {
-    $missing = new CList();
-    foreach ($sync_requirements as [$reason, $action, $tab]) {
-        $missing->addItem([$reason, ' ', (new CLink($action, '#'.$tab))->setAttribute('data-gitkeeper-tab', $tab)]);
-    }
-    $sync_form->addItem((new CTag('h4', true, _('Sync now is unavailable: complete these steps first.')))
-        ->addClass(ZBX_STYLE_RED));
-    $sync_form->addItem((new CDiv($missing))->setId('gitkeeper-sync-requirements'));
+$sync_feedback = (new CSpan($synchronization['message']))->setId('gitkeeper-sync-feedback')
+    ->setAttribute('role', 'status')->setAttribute('aria-live', 'polite')
+    ->setAttribute('data-submitting', _('Submitting snapshot request...'))
+    ->setAttribute('data-unavailable', _('Synchronization status unavailable. Reload the page and check your session.'));
+$missing = (new CList())->setId('gitkeeper-sync-requirements');
+foreach ($sync_requirements as [$reason, $action, $tab]) {
+    $missing->addItem([$reason, ' ', (new CLink($action, '#'.$tab))->setAttribute('data-gitkeeper-tab', $tab)]);
 }
-else {
-    $sync_feedback->addItem(_('Sync now requests a snapshot using the saved settings. It starts on the next worker tick, normally within one minute.'));
+$blocked = (new CTag('h4', true, _('Sync now is unavailable: complete these steps first.')))
+    ->setId('gitkeeper-sync-blocked')->addClass(ZBX_STYLE_RED);
+if ($sync_ready || $sync_busy) {
+    $blocked->setAttribute('hidden', 'hidden');
+    $missing->setAttribute('hidden', 'hidden');
 }
-$sync_button = $submit('sync', _('Sync now'), $sync_ready);
-if (!$sync_ready) {
-    $sync_button->setAttribute('aria-describedby', 'gitkeeper-sync-requirements');
-    $sync_button->setAttribute('title', implode(' ', array_column($sync_requirements, 0)));
-}
+$sync_form->addItem([$blocked, $missing]);
+$sync_button = $submit('sync', _('Sync now'), $sync_ready && !$sync_busy)
+    ->setAttribute('aria-describedby', 'gitkeeper-sync-feedback gitkeeper-sync-requirements');
 $overview_body[] = $sync_form->addItem(makeFormFooter($sync_button))->addItem($sync_feedback);
 
 $github = new CFormGrid();
@@ -417,10 +399,16 @@ $configuration->addItem($note(_('Save & Sync saves these settings and requests a
 if (!$worker_ready || !$github_ready || !$selected_repository || !$api_ready) {
     $configuration->addItem($note($next_step));
 }
+$save_ready = $worker_ready && $api_ready && $github_ready && $selected_repository !== null;
+$configuration_feedback = (new CSpan($synchronization['message']))->setId('gitkeeper-configuration-feedback')
+    ->setAttribute('role', 'status')->setAttribute('aria-live', 'polite')
+    ->setAttribute('data-submitting', _('Submitting settings and snapshot request...'));
 $configuration_body = $form('configuration')->addItem((new CVar('repository_id', $settings['repository_id'] ?? 0))->removeId())
     ->addItem($configuration)->addItem(makeFormFooter(
-    $submit('save', _('Save & Sync'), $worker_ready && $api_ready && $github_ready && $selected_repository !== null)
-));
+    $submit('save', _('Save & Sync'), $save_ready && !$sync_busy)
+        ->setAttribute('data-prerequisites-ready', $save_ready ? '1' : '0')
+        ->setAttribute('aria-describedby', 'gitkeeper-configuration-feedback')
+))->addItem($configuration_feedback);
 
 (new CHtmlPage())->setTitle(_('GitKeeper'))->addItem(
     (new CTabView(['id' => 'gitkeeper-tabs']))

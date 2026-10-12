@@ -125,11 +125,74 @@ final class Queue {
         return $id;
     }
 
-    public function status(string $api_request = ''): array {
+    public static function synchronization(array $status): array {
+        $settings = $status['settings'] ?? [];
+        $missing = [];
+        if (empty($status['available_categories'])) {
+            $missing[] = [_('Worker status is unavailable. Install the worker or check cron.'),
+                _('Open Overview'), 'gitkeeper-tab-overview'];
+        }
+        if (empty($status['github_client_id'])) {
+            $missing[] = [_('The GitHub App Client ID has not been saved.'),
+                _('Configure GitHub App'), 'gitkeeper-tab-github'];
+        }
+        if (($status['github'] ?? '') !== 'Ready') {
+            $missing[] = [_('GitHub authorization is not complete.'), _('Connect GitHub'), 'gitkeeper-tab-github'];
+        }
+        $repositories = array_column($status['repositories'] ?? [], 'id');
+        if (empty($settings['repository_id']) || !in_array($settings['repository_id'], $repositories)) {
+            $missing[] = [_('No accessible private repository has been selected.'),
+                _('Select a repository'), 'gitkeeper-tab-github'];
+        }
+        if (empty($status['zabbix_configured'])) {
+            $missing[] = [_('The Zabbix API token has not been configured and verified.'),
+                _('Configure Zabbix API'), 'gitkeeper-tab-api'];
+        }
+        $can_save = !$missing;
+        if (empty($settings['categories']) || empty($settings['interval'])) {
+            $missing[] = [_('Backup categories and the export interval have not been saved. Click Save & Sync to save them and start the first snapshot.'),
+                _('Open Configuration'), 'gitkeeper-tab-configuration'];
+        }
+        $state = $status['state'] ?? '';
+        if (!empty($status['sync_request_pending'])) {
+            $phase = 'Queued';
+        }
+        elseif ($state === 'Running' && in_array($status['operation'] ?? '', ['save', 'sync'], true)) {
+            $phase = $missing ? 'Saving' : 'Running';
+        }
+        elseif (in_array($state, ['Failed', 'Partial / Incomplete'], true)
+                && in_array($status['operation'] ?? '', ['save', 'sync'], true)) {
+            $phase = 'Failed';
+        }
+        elseif ($missing) {
+            $phase = 'Incomplete';
+        }
+        elseif (!empty($settings['sync_pending'])) {
+            $phase = 'Queued';
+        }
+        else {
+            $phase = $state === 'Completed' ? 'Completed' : 'Ready';
+        }
+        $labels = ['Incomplete' => _('Setup incomplete'), 'Queued' => _('Request queued'),
+            'Saving' => _('Validating and saving settings'), 'Running' => _('Snapshot in progress'),
+            'Failed' => _('Synchronization failed'), 'Completed' => _('Snapshot completed'), 'Ready' => _('Configured')];
+        $messages = ['Incomplete' => _('Complete the missing setup steps below before starting a snapshot.'),
+            'Queued' => _('Your request was received. Wait for the worker; it normally starts within one minute. Do not submit it again.'),
+            'Saving' => _('The worker is checking the selected repository and API permissions before saving your settings.'),
+            'Running' => _('Settings are saved and the snapshot is in progress. Large categories can take several minutes. Follow the category results below.'),
+            'Failed' => _('The last save or snapshot failed. Check Last error below; the missing steps list shows whether setup still needs attention.'),
+            'Completed' => _('The snapshot completed successfully. See Last successful snapshot and Last commit below.'),
+            'Ready' => _('Setup is complete. Sync now creates a snapshot using the saved settings.')];
+        return ['ready' => !$missing, 'can_save' => $can_save, 'state' => $phase, 'label' => $labels[$phase],
+            'message' => $messages[$phase], 'missing' => $missing];
+    }
+
+    public function status(string $api_request = '', string $sync_request = ''): array {
         $file = $this->root.'/public/status.json';
         $status = is_readable($file) ? json_decode(file_get_contents($file), true, 64, JSON_THROW_ON_ERROR)
             : ['state' => 'Not configured', 'github' => 'Disconnected',
                 'error' => 'Worker status unavailable. Check installation and cron.'];
+        $worker_state = $status['state'] ?? 'Not configured';
         $pending = glob($this->root.'/queue/*.json');
         if ($pending) {
             $status['state'] = 'Queued';
@@ -140,6 +203,10 @@ final class Queue {
                 && is_file($this->root.'/queue/'.$api_request.'.json')) {
             $status['zabbix_verification'] = ['id' => $api_request, 'state' => 'Queued', 'error' => null];
         }
+        $status['sync_request_pending'] = preg_match('/^[a-f0-9]{32}$/D', $sync_request)
+            && is_file($this->root.'/queue/'.$sync_request.'.json');
+        // Unrelated queued operations must not hide an export already in progress.
+        $status['synchronization'] = self::synchronization(array_replace($status, ['state' => $worker_state]));
         return $status;
     }
 }

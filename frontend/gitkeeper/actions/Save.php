@@ -104,6 +104,10 @@ class Save extends CController {
                 $redirect = new CControllerResponseRedirect((new CUrl('zabbix.php'))
                     ->setArgument('action', 'gitkeeper.view')->setArgument('api_request', $request_id));
             }
+            elseif ($op === 'save' || $op === 'sync') {
+                $redirect = new CControllerResponseRedirect((new CUrl('zabbix.php'))
+                    ->setArgument('action', 'gitkeeper.view')->setArgument('sync_request', $request_id));
+            }
             CMessageHelper::setSuccessTitle($message);
         }
         catch (\Throwable $e) {

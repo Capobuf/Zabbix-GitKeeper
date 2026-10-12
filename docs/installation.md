@@ -132,7 +132,12 @@ and choose an accessible private repository. Saving the same ID keeps the connec
    do not retry creation of the same name. The native GitHub creation page remains available as a fallback.
 5. Saved settings take precedence. First setup selects all categories supported by the installed worker
    and uses the explicit 15-minute default. Adjust the categories or select 5, 15, 30, 60 minutes or 24 hours. **Save & Sync** queues
-   settings validation and the first export. Watch **Queued → Running → Completed**, or the error/partial result.
+   settings validation and the first export. Overview immediately shows **Request queued**, then
+   **Validating and saving settings**, **Snapshot in progress** and **Snapshot completed**, or
+   **Synchronization failed** with the worker error. A queued save is not shown as incomplete setup
+   while the worker has yet to persist the settings. These messages and missing setup steps update
+   automatically even when form edits prevent a full page reload. Large template inventories can
+   take several minutes; follow category results and wait without submitting another snapshot.
 6. Inspect `gitkeeper/manifest.json` and category JSON files on the repository's default branch.
    Run **Sync now** without a configuration change: the commit SHA should stay the same.
    If it is disabled, Overview lists every missing setup condition beside the button, with links to

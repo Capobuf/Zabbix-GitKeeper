@@ -16,6 +16,40 @@ document.addEventListener('DOMContentLoaded', () => {
         const feedback = document.getElementById('gitkeeper-sync-feedback');
         feedback.textContent = feedback.dataset.submitting;
     });
+    const configurationFeedback = document.getElementById('gitkeeper-configuration-feedback');
+    document.getElementById('gitkeeper-form-configuration')?.addEventListener('submit', () => {
+        configurationFeedback.textContent = configurationFeedback.dataset.submitting;
+    });
+    const syncIndicator = document.getElementById('gitkeeper-synchronization');
+    const syncFeedback = document.getElementById('gitkeeper-sync-feedback');
+    const syncRequest = document.getElementById('gitkeeper-overview').dataset.syncRequest ?? '';
+    const updateSynchronization = info => {
+        if (!syncIndicator || !info) return;
+        const busy = ['Queued', 'Saving', 'Running'].includes(info.state);
+        syncIndicator.textContent = info.label;
+        syncIndicator.classList.remove('green', 'red', 'grey');
+        syncIndicator.classList.add(['Incomplete', 'Failed'].includes(info.state) ? 'red' : busy ? 'grey' : 'green');
+        syncFeedback.textContent = info.message;
+        configurationFeedback.textContent = info.message;
+        document.getElementById('gitkeeper-next-step').textContent = info.state === 'Incomplete' && info.missing.length
+            ? info.missing[0][0] + ' ' + info.missing[0][1] + '.' : info.message;
+        const missing = document.getElementById('gitkeeper-sync-requirements');
+        missing.replaceChildren(...info.missing.map(([reason, action, tab]) => {
+            const item = document.createElement('li');
+            item.append(document.createTextNode(reason + ' '));
+            const link = document.createElement('a');
+            link.href = '#' + tab;
+            link.dataset.gitkeeperTab = tab;
+            link.textContent = action;
+            item.append(link);
+            return item;
+        }));
+        missing.hidden = info.ready || busy;
+        document.getElementById('gitkeeper-sync-blocked').hidden = info.ready || busy;
+        document.getElementById('gitkeeper-submit-sync').disabled = !info.ready || busy;
+        const save = document.getElementById('gitkeeper-submit-save');
+        save.disabled = save.dataset.prerequisitesReady !== '1' || !info.can_save || busy;
+    };
     const verificationPanel = document.getElementById('gitkeeper-api-verification');
     const apiRequest = verificationPanel?.dataset.requestId ?? '';
     const updateVerification = (state, error = '') => {
@@ -95,11 +129,15 @@ document.addEventListener('DOMContentLoaded', () => {
         if (stopped) return;
         try {
             const response = await fetch('zabbix.php?action=gitkeeper.status'
-                + (apiRequest ? '&api_request=' + encodeURIComponent(apiRequest) : ''), {
+                + (apiRequest ? '&api_request=' + encodeURIComponent(apiRequest) : '')
+                + (syncRequest ? '&sync_request=' + encodeURIComponent(syncRequest) : ''), {
                 credentials: 'same-origin', cache: 'no-store'
             });
             if (!response.ok) throw new Error('Status unavailable');
             const state = await response.json();
+            if (syncIndicator && !state.synchronization) throw new Error('Status unavailable');
+            // These results must stay live even when form edits defer a full page reload.
+            updateSynchronization(state.synchronization);
             updateVerification(state.zabbix_verification?.state ?? (state.zabbix_configured ? 'Verified' : 'Not configured'),
                 state.zabbix_verification?.error);
             const apiConfigured = document.getElementById('gitkeeper-api-configured');
@@ -125,6 +163,13 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } catch (_) {
             updateVerification('Unavailable');
+            if (syncIndicator) {
+                syncIndicator.textContent = syncFeedback.dataset.unavailable;
+                syncIndicator.classList.remove('green', 'red');
+                syncIndicator.classList.add('grey');
+                syncFeedback.textContent = syncFeedback.dataset.unavailable;
+                configurationFeedback.textContent = syncFeedback.dataset.unavailable;
+            }
             for (const id of ['gitkeeper-error', 'gitkeeper-connection-error', 'gitkeeper-api-error']) {
                 const element = document.getElementById(id);
                 if (element) element.textContent = 'Status unavailable. Reload the page and check your session.';

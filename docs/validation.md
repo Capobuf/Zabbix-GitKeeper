@@ -190,6 +190,20 @@ change is performed by this command.
   and its safe error separately from other operations. Existing verified credentials show success.
 - Tests and visual verification are left to the user for this change, as requested.
 
+## Save & Sync progress visibility, 2026-10-12
+
+- Read-only inspection of installed status and saved settings showed a successful save with all five
+  categories, a 15-minute interval and the selected private repository. The worker was exporting
+  templates after exporting actions, hosts and media types; no error or queued request was present.
+- The synchronization setup label and missing-steps list were only rendered on page load. Polling
+  deferred a full reload during form edits/focus and did not update those fields, allowing an obsolete
+  incomplete-setup message to remain visible while export was running.
+- Added shared status computation for initial rendering and polling, request-ID correlation for
+  queued saves/snapshots, distinct queued/validating/exporting/completed/failed messages and live
+  missing-step links. Snapshot buttons are disabled while that work is pending or in progress.
+- Tests and visual verification are left to the user, as requested. No new snapshot was triggered
+  and the ongoing worker was not interrupted for diagnosis or deployment.
+
 ## Earlier automated checks
 
 Executed successfully on 2026-10-11:
