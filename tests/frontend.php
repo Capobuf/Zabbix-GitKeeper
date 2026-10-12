@@ -131,8 +131,27 @@ foreach ([
     ensure(Installation::apiUrl($frontend_url) === $expected, 'Incorrect derived endpoint');
 }
 
-$valid = ['settings' => ['repository_id' => 42, 'interval' => 15, 'categories' => ['hosts']]];
+$valid = ['settings' => ['repository_id' => 42, 'interval' => 4320, 'categories' => ['hosts']]];
 Queue::validate('save', $valid);
+foreach ([1, 7, 1507, Queue::MAX_INTERVAL] as $minutes) {
+    Queue::validate('save', ['settings' => array_replace($valid['settings'], ['interval' => $minutes])]);
+}
+ensure(Queue::customInterval(1, 1, 7) === 1507, 'Custom duration was not converted to minutes');
+ensure(Queue::customInterval(0, 0, 1) === 1, 'One minute must be accepted');
+ensure(Queue::customInterval(1491308, 2, 7) === Queue::MAX_INTERVAL, 'Maximum interval was rejected');
+foreach ([[0, 0, 0], [-1, 0, 1], [0, -1, 1], [0, 24, 0], [0, 0, -1], [0, 0, 60],
+        [1491309, 0, 0], [1491308, 2, 8]] as $parts) {
+    $rejected = false;
+    try { Queue::customInterval(...$parts); }
+    catch (Throwable $e) { $rejected = true; }
+    ensure($rejected, 'Invalid custom duration was accepted');
+}
+foreach ([true, 0, -1, 2147483648, 1.5, '7'] as $minutes) {
+    $rejected = false;
+    try { Queue::validate('save', ['settings' => array_replace($valid['settings'], ['interval' => $minutes])]); }
+    catch (Throwable $e) { $rejected = true; }
+    ensure($rejected, 'Invalid interval was accepted');
+}
 Queue::validate('set_github_app', ['client_id' => 'Iv1.fixture']);
 Queue::validate('select_repository', ['repository_id' => 42]);
 Queue::validate('create_repository', ['name' => 'backup', 'owner' => 'Test-Organization']);
@@ -140,7 +159,7 @@ Queue::validate('set_zabbix', ['url' => 'http://127.0.0.1/zabbix/api_jsonrpc.php
 Queue::validate('set_zabbix', ['url' => 'https://127.0.0.1/zabbix/api_jsonrpc.php',
     'token' => str_repeat('a', 64), 'verify_tls' => false]);
 foreach ([['shell', []], ['sync', ['command' => 'bad']], ['save', ['settings' => ['repository_id' => 42,
-        'interval' => 1, 'categories' => ['hosts']]]], ['save', ['settings' => ['repository_id' => 42,
+        'interval' => 0, 'categories' => ['hosts']]]], ['save', ['settings' => ['repository_id' => 42,
         'interval' => 15, 'categories' => ['restore']]]], ['set_zabbix', ['url' => 'ftp://example/api_jsonrpc.php',
         'token' => str_repeat('a', 64)]], ['set_github_app', ['client_id' => '$(bad)']],
         ['set_github_app', ['client_id' => 'Iv1.fixture', 'client_secret' => 'bad']],
@@ -176,6 +195,36 @@ try {
     $id = $queue->submit('sync');
     ensure(file_exists($root.'/queue/'.$id.'.json'), 'Request not atomically published');
     ensure($queue->status()['state'] === 'Queued', 'Queued status not immediate');
+    ensure($queue->status('', '', $id)['request_pending'], 'Pending operation must correlate by filename');
+    ensure($queue->status()['worker_availability'] === 'unavailable', 'Missing status must differ from absent worker');
+    $configured = ['available_categories' => Queue::CATEGORIES, 'github_client_id' => 'Iv1.fixture',
+        'github' => 'Ready', 'zabbix_configured' => true,
+        'repositories' => [['id' => 42, 'private' => true]],
+        'settings' => ['repository_id' => 42, 'categories' => ['hosts'], 'interval' => 15],
+        'last_success' => 123, 'last_commit' => str_repeat('a', 40), 'state' => 'Ready'];
+    ensure(Queue::setup([])['active'] === 0, 'Empty setup must start with installation');
+    ensure(Queue::setup(['available_categories' => Queue::CATEGORIES])['active'] === 1,
+        'API setup must precede GitHub setup');
+    ensure(Queue::setup($configured)['operational'], 'Existing configuration must enter operational overview');
+    ensure(Queue::synchronization($configured)['ready'], 'Verified setup must enable Sync');
+    $failed = array_replace($configured, ['operation' => 'test_github', 'state' => 'Ready',
+        'last_sync' => ['state' => 'Failed', 'error' => 'Policy failure']]);
+    ensure(Queue::synchronization($failed)['state'] === 'Failed', 'GitHub check must not hide a failed snapshot');
+    ensure(Queue::synchronization($failed)['error'] === 'Policy failure', 'Snapshot error must persist');
+    ensure(Queue::setup($failed)['operational'], 'Failed snapshot must not restart existing setup');
+    $publishing = array_replace($failed, ['state' => 'Running', 'operation' => 'sync', 'sync_phase' => 'Publishing']);
+    ensure(Queue::synchronization($publishing)['state'] === 'Publishing', 'Publishing is not global success');
+    $unchanged = array_replace($configured, ['changed' => false]);
+    ensure(Queue::synchronization($unchanged)['label'] === 'Nessuna modifica rilevata', 'Unchanged snapshot needs a distinct result');
+    $queued = array_replace($configured, ['current_request' => ['id' => 'other', 'operation' => 'test_github'],
+        'state' => 'Running', 'sync_request_pending' => true]);
+    ensure(Queue::synchronization($queued)['state'] === 'Queued', 'Snapshot submitted while busy must remain queued');
+    $public_repo = array_replace($configured, ['repositories' => [['id' => 42, 'private' => false]]]);
+    ensure(!Queue::synchronization($public_repo)['can_save'], 'Public destination must not satisfy setup');
+    $view = file_get_contents(__DIR__.'/../frontend/gitkeeper/views/gitkeeper.view.php');
+    ensure(substr_count($view, '->addTab(') === 2, 'Only Overview and Settings tabs are allowed');
+    ensure(str_contains($view, 'CFormFieldsetCollapsible') && str_contains($view, 'CTableInfo'), 'Native form/table components are required');
+    ensure(!str_contains($view, "'enable_device_flow'"), 'Device Flow must not use invented URL parameters');
     if (PHP_OS_FAMILY !== 'Windows') {
         ensure((fileperms($root.'/queue/'.$id.'.json') & 0777) === 0240, 'Insecure queue mode');
     }
@@ -183,6 +232,24 @@ try {
     API::$tokens = new TokenAPI();
     $controller = new Modules\GitKeeper\Actions\Save();
     $action = new ReflectionMethod($controller, 'doAction');
+    foreach ([['interval' => 0, 'interval_days' => 1, 'interval_hours' => 1, 'interval_minutes' => 7],
+            ['interval' => 30, 'interval_days' => -1]] as $input) {
+        $controller->input = ['operation' => 'save', 'repository_id' => 42, 'categories' => ['hosts']] + $input;
+        $action->invoke($controller);
+        $requests = glob($root.'/queue/*.json');
+        ensure(count($requests) === 1, 'Custom/preset settings were not queued');
+        chmod($requests[0], 0600);
+        $request = json_decode(file_get_contents($requests[0]), true);
+        ensure($request['params']['settings']['interval'] === ($input['interval'] ?: 1507), 'Incorrect duration handoff');
+        ensure(count($request['params']['settings']) === 3, 'Custom parts leaked into the worker protocol');
+        unlink($requests[0]);
+    }
+    foreach ([['interval_days' => 0, 'interval_hours' => 0, 'interval_minutes' => 0], []] as $parts) {
+        $controller->input = ['operation' => 'save', 'repository_id' => 42, 'categories' => ['hosts'], 'interval' => 0] + $parts;
+        $action->invoke($controller);
+        ensure(glob($root.'/queue/*.json') === [], 'Zero or missing custom parts were queued');
+        ensure(str_contains(CMessageHelper::$error, 'Intervallo non valido'), 'Custom interval error was not identified');
+    }
     $controller->input = ['operation' => 'create_zabbix_token', 'api_url' => ' http://127.0.0.1/zabbix/api_jsonrpc.php ', 'consent' => 1];
     $action->invoke($controller);
     ensure(CMessageHelper::$success !== '', 'Successful token setup had no notification');

@@ -2,7 +2,8 @@
 
 This implementation targets Linux with Zabbix server and frontend on the same machine.
 Zabbix **7.0 and 7.4 are targets, not certified versions**. Frontend and partial read-only collector
-checks have run against Zabbix 7.4.15; the full installation/OAuth/cron/publishing flow is unverified.
+checks and the updated UI with an existing GitHub connection have run against Zabbix 7.4.15;
+the full fresh installation/OAuth/permission acceptance sequence remains unverified. See [validation](validation.md).
 There is no stable release or selected project license. Use a disposable instance for acceptance testing.
 
 ## Prerequisites
@@ -10,12 +11,12 @@ There is no stable release or selected project license. Use a disposable instanc
 - Python 3.10+ with `venv`/pip, system Git, frontend-compatible PHP (8.0+), running systemd, cron reading `/etc/cron.d`, and standard Linux account/filesystem tools.
 - A working Zabbix HTTP or HTTPS JSON-RPC URL. HTTPS validates certificates by default; the UI can explicitly allow an invalid/self-signed certificate. Use loopback when detected for local HTTP traffic.
 - The real frontend root and real PHP-FPM/Apache process user. Do not guess them: inspect the active web/PHP service configuration. The frontend root contains `zabbix.php`, `include/defines.inc.php` and `modules/`.
-- Your registered GitHub App and its **actual Client ID**. Configure it in the GitHub tab after installing the worker. No App, client secret, signing key or PAT is distributed.
+- Your registered GitHub App and its **actual Client ID**. Configure it in the guided App step in Panoramica after installing the worker. No App, client secret, signing key or PAT is distributed.
 - A private destination repository and App/user write access. Never use the public source repository as a backup destination.
 
 ## Register the GitHub App
 
-**Register one GitHub App for the project, not one per Zabbix installation.** Follow the [GitHub App setup guide](github-app.md). Official releases can eventually include the public Client ID; the current experimental installer still requires the real ID via `--client-id`. GitHub App is the only supported GitHub authentication method.
+**Register your own GitHub App for each installation.** Follow the [App setup guide](github-app.md). There is no official/shared App or global Client ID. The installer accepts an optional initial Client ID; it can also be saved from the UI. GitHub App is the only supported authentication method.
 
 In GitHub developer settings, create/configure a GitHub App and enable **Device Flow**.
 Enable user access-token expiration. Set repository **Metadata: read**, **Contents: read/write**.
@@ -37,11 +38,11 @@ Official references: [Device Flow](https://docs.github.com/en/apps/creating-gith
 
 ## Install from this branch
 
-When the frontend module is already enabled and the worker is unavailable, **GitKeeper > Overview**
+When the frontend module is already enabled and the worker is unavailable, **GitKeeper > Panoramica**
 shows a read-only installation command with a **Copy** button. It uses the actual frontend path and
 PHP process user, downloads main into a fresh temporary directory,
 and invokes the existing installer. Paste it into a Bash terminal on the Zabbix server; the command
-stops on the first error. Configure the Client ID in the GitHub tab afterward. Install the prerequisites
+stops on the first error. Configure the Client ID in the guided App step in Panoramica afterward. Install the prerequisites
 listed above first, and restart the actual PHP service afterward. If PHP cannot detect its process
 identity, use the manual instructions below rather than a guessed user.
 The command downloads the published branch; unpushed local edits are not included.
@@ -89,90 +90,79 @@ Installation locations:
 
 ## Configure and synchronize
 
-In **Administration > GitKeeper > GitHub**, enter **GitHub App Client ID** and select **Save Client ID**.
-Use the Client ID shown in the App settings, not the numeric App ID. The worker saves it on the next
-worker invocation and the field then shows the stored value. UI requests invoke it automatically;
-requests arriving during an export wait for that export to finish. Device Flow must be enabled; this flow requires
-neither a client secret nor a signing private key. For an organization-owned App, open that
-organization's Developer settings on GitHub. Changing the Client ID removes the previous local GitHub
-authorization and pending device code, clears the repository selection and stops scheduling. Reconnect
-and choose an accessible private repository. Saving the same ID keeps the connection and schedule.
+The page has two native tabs: **Panoramica** and **Impostazioni**. A new installation sees these
+expandable steps in Panoramica, based on persistent worker state rather than a separate wizard store:
 
-1. In **Zabbix API**, review the prefilled `.../api_jsonrpc.php` URL. GitKeeper uses the worker's
-   verified endpoint first. Otherwise, it derives a loopback endpoint from the PHP server port and
-   frontend path and probes `apiinfo.version` without credentials (two-second timeout, no redirects).
-   A matching frontend version selects loopback automatically. If the probe fails, it uses the native
-   Zabbix frontend URL setting, then the current page address. No server-specific address is hardcoded.
-   Subdirectories and ports are preserved. HTTP and HTTPS are supported. HTTPS certificates are verified
-   by default; check **Allow an invalid or self-signed certificate (skip verification)** only for an
-   endpoint that needs this exception. This setting applies to Zabbix API access, not GitHub.
-   HTTP sends tokens without encryption. **Use 127.0.0.1** keeps the same scheme, port and path and
-   requests loopback access from the worker on the Zabbix server. The worker verifies it before saving;
-   a frontend bound to a specific interface or a name-based virtual host may require its original address.
-   The URL remains editable, and both token forms share the URL and certificate setting. Only the
-   verified endpoint and certificate setting are published in status; the token remains private.
-   Supply an existing token, or explicitly check the permission-inheritance consent and select
-   **Create and verify token**. Native creation uses the current administrator's session
-   to call `token.create`/`token.generate`; cron never uses that browser session.
-   The token is non-expiring and inherits that account's permissions. Review/revoke it in the native
-   **API tokens** page. This first iteration requires a Super admin token: a Super-admin-only
-   `authentication.get` probe prevents a restricted account's partial visibility being treated as complete.
-   The role must allow API calls for each selected collector and `configuration.export`.
-2. Verification starts automatically after submission; if another operation is running, wait for it
-   to finish. Check **Zabbix API > Worker status /
-   Last error**. Successful verification shows **Configured**. Tokens never reappear in the UI.
-   The persistent result panel distinguishes **Token verification queued**, **Verifying the token**,
-   **Token verified and saved** and **Token verification failed**. Creation alone does not finish setup.
-   Success links to Configuration / Save & Sync; a verification failure shows its own error even if
-   another operation later changes the general worker status. A failed replacement keeps the old token.
-3. Select **Connect GitHub**, wait for the device code, open **Authorize on GitHub** and authorize your account.
-   Return to GitKeeper; the page checks the result automatically. App installation and repository access
-   are a separate step on GitHub. The worker runs once per minute, even if the browser is closed.
-4. In **GitHub**, refresh repositories to see the accessible private repositories, their write access and default
-   branch. Select one and click **Use repository**; the only accessible repository is preselected when there is
-   no saved choice. Selection can be saved before Zabbix API setup and does not start an export. Changing the
-   destination pauses the previous schedule until **Save & Sync**.
-   Alternatively, enter the owner (prefilled from the selected repository or connected account) and a name,
-   then click **Create and select private repository**. Personal and organization creation uses GitHub's native
-   REST endpoints. Creation is always private and initialized; the new repository is selected only after App
-   access is verified. If it was created but the App cannot access it, grant installation access and refresh;
-   do not retry creation of the same name. The native GitHub creation page remains available as a fallback.
-5. Saved settings take precedence. First setup selects all categories supported by the installed worker
-   and uses the explicit 15-minute default. Adjust the categories or select 5, 15, 30, 60 minutes or 24 hours. **Save & Sync** queues
-   settings validation and the first export. Overview immediately shows **Request queued**, then
-   **Validating and saving settings**, **Snapshot in progress**, **Publishing snapshot to GitHub**
-   and **Snapshot completed**, or
-   **Synchronization failed** with the worker error. A queued save is not shown as incomplete setup
-   while the worker has yet to persist the settings. These messages and missing setup steps update
-   automatically even when form edits prevent a full page reload. Large template inventories can
-   take several minutes; the category table shows checked host/template counts against the total,
-   updated after each successfully checked and written object. These counts exclude groups; the final
-   Objects column includes groups. Progress updates without reloading the page or clearing edited
-   fields. Once export completes, a separate publication status covers Git commit preparation/push.
-   Wait without submitting another snapshot.
-6. Inspect `gitkeeper/manifest.json` and category JSON files on the repository's default branch.
-   Run **Sync now** without a configuration change: the commit SHA should stay the same.
-   If it is disabled, Overview lists every missing setup condition beside the button, with links to
-   the relevant tabs. **Worker status: Ready** is distinct from **Synchronization: Configured**:
-   synchronization also requires a verified API token and saved backup categories/interval.
-   Change a tracked non-secret setting (for example an item interval or action status) and repeat:
-   one commit should contain the corresponding diff.
+0. **Verifica installazione**: the installed worker needs no repeated prerequisite instructions.
+   A missing worker shows the installation command where PHP can detect the real installation path
+   and process user. Existing installation with unavailable status is distinguished from absence.
+1. **Accesso alla configurazione Zabbix**: create a token with explicit consent using native
+   `token.create`/`token.generate`, or expand **Usa un token esistente**. The created token has no
+   expiry and inherits the administrator's permissions. URL/TLS options are advanced; TLS verification
+   defaults to enabled. The detected local URL is used only after an unauthenticated `apiinfo.version`
+   probe matches the frontend version; the verified worker URL takes precedence. HTTP transmits tokens
+   without encryption. A browser-created token is not configured until the worker verifies it.
+   Failure preserves the previously verified token; revoke unused new tokens in Zabbix separately.
+2. **Crea e collega la tua GitHub App**: register your own App, save its **Client ID** (not App ID),
+   enable Device Flow manually on GitHub, and authorize your account with the displayed code and Copy
+   action. Registration and authorization are separate from installing the App on the repository owner.
+   Review the [App settings and organization restrictions](github-app.md).
+3. **Repository di destinazione**: grant installation access, then **Aggiorna elenco** and confirm a
+   private destination and default branch. A single repository is preselected but needs confirmation.
+   Direct private creation supports personal/organization owners when permissions permit. If creation
+   succeeded without App access, grant access and refresh; do not recreate it. GitHub's native creation
+   page is the fallback. Changing destination pauses scheduling until **Salva e sincronizza**.
+4. **Cosa sincronizzare**: all available implemented categories are selected initially, with a 3-day
+   default. Preset intervals are 5, 15, 30, 60 minutes, 24 hours and 3 days. Choose **Personalizzato**
+   to enter **Giorni**, **Ore** (0–23) and **Minuti** (0–59), with a total of at least one minute.
+   **Salva e sincronizza** queues
+   validation and the first snapshot without waiting in PHP.
+
+Native submission notifications mean **Richiesta inviata**, not completion. The same page shows the
+correlated queue/current-operation/latest result, with synchronization tracked independently from
+connection checks. Export category results mean **Elaborata**, not published. Wait for **Snapshot
+pubblicato** or **Nessuna modifica rilevata**; the existing commit remains linked in the latter case.
+Counts update as categories/objects finish; no estimated percentage is displayed.
+
+After activation, Panoramica shows the last synchronization outcome, last successful snapshot, next run
+or suspended schedule, repository/branch, frequency and commit. Failure never hides an earlier successful
+snapshot. A later successful GitHub check does not erase the last synchronization error. **Sincronizza
+ora** lists missing prerequisites when unavailable and is disabled during a queued/active snapshot.
+
+Impostazioni groups **Sincronizzazione**, **Connessioni** and **Avanzate e gestione credenziali**.
+Change frequency directly without repeating the guide. Completed setup steps can be reopened.
+Custom intervals are stored as total minutes and shown as days, hours and minutes. The interval starts
+after the preceding successful snapshot finishes; scheduled runs are checked once per minute.
+Removing local tokens or disconnecting requires confirmation and suspends scheduling; GitHub repositories,
+Apps and commits remain, and tokens/authorization must be revoked separately on Zabbix/GitHub.
+
+One read-only polling loop runs every 3 seconds while active and every 20 seconds while idle. It avoids
+overlapping requests, pauses in hidden tabs and refreshes when returning. It never implicitly refreshes
+GitHub repository lists or calls Zabbix APIs. Dynamic status updates preserve unsaved form input and never
+reload the page automatically. Native POST submissions still navigate normally and retain CSRF protection.
+The worker continues with the browser closed. Persistent state is recovered on return. Missing/invalid
+status is temporary unavailability; an old timestamp warns without declaring a long export failed.
+Expired frontend sessions are reported as such, without a JSON parsing error.
 
 Snapshots use the repository's current default branch. No branch-selection or branch-creation UI is
 implemented. Configure suitable branch protection before testing; a protection rejection is visible and
 does not bypass GitHub rules. Only the `gitkeeper/` area is managed; foreign files cause a refusal to delete it.
-Secret/payload-only changes intentionally produce no diff. This is tracking of the documented readable
+Unavailable API values cannot produce a readable diff. This is tracking of the documented readable
 scope, not a complete backup or directly importable native export.
 
-The GitHub tab separates App configuration, account authorization and repository selection into three
-numbered steps. **Refresh repositories** is beside the destination list; **Connect GitHub** is hidden
-when connected or awaiting authorization. Empty-list guidance explains App installation/access without
-suggesting that account authorization failed. Overview shows the next incomplete setup step, also shown
-in Configuration when synchronization is unavailable. Native notifications describe the requested
-operation; a submission notification is not confirmation that the worker completed it.
+### Update an existing snapshot to the readable-credentials policy
+
+Install the updated worker before selecting **Sincronizza ora**. Updating only the frontend does not
+change the installed export policy. Each synchronization exports every selected category again and
+replaces the complete managed `gitkeeper/` snapshot, including files already committed. A normal commit
+and push publish the newly readable values; a force push does not run the export policy and is unnecessary.
+Wait for **Snapshot pubblicato**, then check that `gitkeeper/manifest.json` has `schema: 2` and inspect
+the files at the new commit. Older commits retain `<omitted: potentially sensitive>` in Git history.
+Values unavailable from Zabbix retain the documented unreadable marker.
+
 
 **Replace/revoke tokens:** submit a new existing API token to replace the worker copy, or select
-**Remove stored API token** to stop scheduling and delete the worker copy. Then revoke the old token in
+**Rimuovi token locale Zabbix** to stop scheduling and delete the worker copy. Then revoke the old token in
 Zabbix's native API token page. Local removal/replacement is deliberately distinct from server-side
 revocation. A native token created successfully but later rejected by worker verification may still exist:
 revoke unused `GitKeeper ...` tokens in Zabbix. GitHub reconnection replaces local token material;

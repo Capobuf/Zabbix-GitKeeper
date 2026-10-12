@@ -1,7 +1,7 @@
 """Explicit context-based policy shared by reviewed 7.0 and 7.4 schemas.
 
-Identity/label fields are confidential metadata. Free-form payloads are omitted,
-including ordinary macro values: a text macro can hold a password too.
+Preserve readable configuration and credentials, including free-form payloads.
+Only values unavailable from Zabbix are marked as unreadable.
 """
 
 import json
@@ -9,17 +9,16 @@ import re
 
 from .storage import Error
 
-OMITTED = "<omitted: potentially sensitive>"
-UNREADABLE = "<not-readable: secret or vault macro>"
+UNREADABLE = "<not-readable: secret macro>"
 
 
 class PolicyError(Error):
     """Unsupported structure, described only with reviewed schema paths."""
 
 
-def rule(identity="", scalar="", redact="", children=None):
+def rule(identity="", scalar="", payload="", children=None):
     return {**{k: "identity" for k in identity.split()}, **{k: "scalar" for k in scalar.split()},
-            **{k: "redact" for k in redact.split()}, **(children or {})}
+            **{k: "payload" for k in payload.split()}, **(children or {})}
 
 
 ITEM = rule("uuid name interface_ref", "type value_type history trends status discover inventory_link "
@@ -45,11 +44,11 @@ SCHEMAS = {
     "group": rule("uuid name"), "reference": rule("name"),
     "group_link": rule(children={"group": "reference"}), "master": rule("", "", "key"),
     "host": HOST, "template": {**HOST, "template": "identity", "vendor": "vendor",
-                                "wizard_ready": "scalar", "readme": "redact"},
+                                "wizard_ready": "scalar", "readme": "payload"},
     "vendor": rule("name version"), "item": ITEM,
     "discovery": {**ITEM, "filter": "native_filter", "item_prototypes": "item", "trigger_prototypes": "trigger",
-                  "graph_prototypes": "graph", "host_prototypes": "host", "lld_macro_paths": "redact",
-                  "overrides": "redact"},
+                  "graph_prototypes": "graph", "host_prototypes": "host", "lld_macro_paths": "payload",
+                  "overrides": "payload"},
     "interface": rule("interface_ref ip dns", "default type useip port", "", {"details": "snmp"}),
     "snmp": rule("", "version bulk securitylevel authprotocol privprotocol max_repetitions",
                  "community contextname securityname authpassphrase privpassphrase"),
@@ -129,19 +128,18 @@ def sanitize(value, context: str, excluded: set[str], path: str = "", collection
     for key, item in value.items():
         field_path = path + "/" + key
         policy = schema[key]
-        if policy == "redact":
-            excluded.add(field_path)
-            result[key] = UNREADABLE if context == "macro" and key == "value" and str(value.get("type")) in (
-                "1", "2", "SECRET_TEXT", "VAULT") else OMITTED
+        if context == "export" and key == "date":
+            # Native export timestamps must not cause a commit for unchanged configuration.
+            continue
+        if policy == "payload":
+            result[key] = json.loads(encode(item))
         elif policy in ("identity", "scalar", "schedule"):
             if not isinstance(item, (str, int, float, bool)) or item is None:
                 raise PolicyError(f"Unexpected scalar type at {field_path} (schema: {context}); snapshot stopped.")
             if policy != "identity":
-                # Contexts are arbitrary text, even when referenced by control/time fields.
-                # Omit the entire value rather than publish a potentially sensitive context.
+                # Contextual macros are part of the configuration, including arbitrary context text.
                 if re.search(r"\{\$[A-Za-z0-9_.]+:", str(item)):
-                    excluded.add(field_path)
-                    result[key] = OMITTED
+                    result[key] = item
                     continue
                 pattern = r"[A-Za-z0-9_.,+{}#$:;/ -]*" if policy == "schedule" else r"[A-Za-z0-9_.,+{}#$:/ -]*"
                 if not re.fullmatch(pattern, str(item)):
@@ -151,4 +149,7 @@ def sanitize(value, context: str, excluded: set[str], path: str = "", collection
             result[key] = item
         else:
             result[key] = sanitize(item, policy, excluded, field_path, key)
+    if context == "macro" and str(value.get("type")) in ("1", "SECRET_TEXT") and not value.get("value"):
+        excluded.add(path + "/value")
+        result["value"] = UNREADABLE
     return result

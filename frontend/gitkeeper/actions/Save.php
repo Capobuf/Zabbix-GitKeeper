@@ -16,7 +16,8 @@ class Save extends CController {
     // Default native CController CSRF validation remains enabled for every mutation.
     protected function checkInput(): bool {
         $valid = $this->validateInput(['operation' => 'required|string', 'repository_id' => 'int32',
-            'interval' => 'int32', 'categories' => 'array', 'api_url' => 'string', 'api_token' => 'string',
+            'interval' => 'int32', 'interval_days' => 'int32', 'interval_hours' => 'int32',
+            'interval_minutes' => 'int32', 'categories' => 'array', 'api_url' => 'string', 'api_token' => 'string',
             'repository_name' => 'string', 'repository_owner' => 'string', 'client_id' => 'string',
             'consent' => 'in 1', 'tls_skip_verify' => 'in 1']);
         if (!$valid) {
@@ -33,27 +34,20 @@ class Save extends CController {
         $redirect = new CControllerResponseRedirect((new CUrl('zabbix.php'))->setArgument('action', 'gitkeeper.view'));
         $created = null;
         $token_error = null;
+        $interval_error = null;
         try {
             $op = $this->getInput('operation');
-            $messages = [
-                'set_github_app' => _('Client ID update requested. The stored value will update when the worker finishes.'),
-                'connect' => _('GitHub connection requested. Wait here for the authorization code and link.'),
-                'disconnect' => _('GitHub disconnection requested. Wait for the connection status to update.'),
-                'repositories' => _('Repository refresh requested. The list will update when the worker finishes.'),
-                'test_github' => _('Connection check requested. The result will appear in the connection status.'),
-                'select_repository' => _('Repository selection requested. The selected destination will update when confirmed.'),
-                'create_repository' => _('Private repository creation requested. Wait for the selected destination or an error before trying again.'),
-                'create_zabbix_token' => _('Token created. Verification is queued; setup is not complete yet. Follow the verification result in Zabbix API.'),
-                'set_zabbix' => _('Verification queued. The submitted token is not active yet. Follow the verification result in Zabbix API.'),
-                'clear_zabbix' => _('Stored token removal requested. This does not revoke the token in Zabbix.'),
-                'save' => _('Settings save and snapshot requested. Follow progress in Overview.'),
-                'sync' => _('Snapshot queued. Processing starts automatically; wait if another operation is running. Follow Worker status and Last error in Overview.')
-            ];
-            $message = $messages[$op] ?? _('Request submitted. Wait for the status to update.');
             $params = [];
             if ($op === 'save') {
+                $interval = (int) $this->getInput('interval', Queue::DEFAULT_INTERVAL);
+                if ($interval === 0) {
+                    $interval_error = _('Intervallo non valido: inserisci giorni non negativi, ore da 0 a 23 e minuti da 0 a 59, per un totale di almeno un minuto entro il limite supportato.');
+                    $interval = Queue::customInterval((int) $this->getInput('interval_days', -1),
+                        (int) $this->getInput('interval_hours', -1), (int) $this->getInput('interval_minutes', -1));
+                    $interval_error = null;
+                }
                 $params = ['settings' => ['repository_id' => (int) $this->getInput('repository_id', 0),
-                    'interval' => (int) $this->getInput('interval', 15), 'categories' => $this->getInput('categories', [])]];
+                    'interval' => $interval, 'categories' => $this->getInput('categories', [])]];
             }
             elseif ($op === 'set_zabbix' || $op === 'create_zabbix_token') {
                 $token_error = _('Enter an HTTP or HTTPS API URL ending in /api_jsonrpc.php, without credentials, query parameters or a fragment. No token was created or submitted.');
@@ -100,15 +94,12 @@ class Save extends CController {
                 $params = ['repository_id' => (int) $this->getInput('repository_id', 0)];
             }
             $request_id = (new Queue())->submit($op, $params);
-            if ($op === 'set_zabbix') {
-                $redirect = new CControllerResponseRedirect((new CUrl('zabbix.php'))
-                    ->setArgument('action', 'gitkeeper.view')->setArgument('api_request', $request_id));
-            }
-            elseif ($op === 'save' || $op === 'sync') {
-                $redirect = new CControllerResponseRedirect((new CUrl('zabbix.php'))
-                    ->setArgument('action', 'gitkeeper.view')->setArgument('sync_request', $request_id));
-            }
-            CMessageHelper::setSuccessTitle($message);
+            $redirect = new CControllerResponseRedirect((new CUrl('zabbix.php'))
+                ->setArgument('action', 'gitkeeper.view')->setArgument('request_id', $request_id)
+                ->setArgument('request_operation', $op)
+                ->setArgument('api_request', $op === 'set_zabbix' ? $request_id : '')
+                ->setArgument('sync_request', in_array($op, ['save', 'sync'], true) ? $request_id : ''));
+            CMessageHelper::setSuccessTitle(_('Richiesta inviata. Attendi l’esito del worker nella sezione dell’operazione.'));
         }
         catch (\Throwable $e) {
             if ($created !== null) {
@@ -131,7 +122,7 @@ class Save extends CController {
                 'set_zabbix' => _('Token verification was not submitted. Check the API URL, token format and worker queue permissions.'),
                 'create_zabbix_token' => _('Token setup was not submitted. Check the API URL, consent and worker queue permissions.')
             ];
-            CMessageHelper::setErrorTitle($token_error ?? $errors[$this->getInput('operation')] ??
+            CMessageHelper::setErrorTitle($token_error ?? $interval_error ?? $errors[$this->getInput('operation')] ??
                 _('Request was not submitted. Check that the worker is installed and its queue is writable.'));
         }
         $this->setResponse($redirect);

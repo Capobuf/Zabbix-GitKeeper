@@ -5,7 +5,9 @@ use RuntimeException;
 
 final class Queue {
     public const CATEGORIES = ['hosts', 'templates', 'actions', 'media_types', 'users'];
-    public const INTERVALS = [5, 15, 30, 60, 1440];
+    public const DEFAULT_INTERVAL = 4320;
+    public const INTERVALS = [5, 15, 30, 60, 1440, 4320];
+    public const MAX_INTERVAL = 2147483647; // Native int32 input, in minutes.
     private string $root;
 
     public function __construct(?string $root = null) {
@@ -22,6 +24,18 @@ final class Queue {
                 || !str_ends_with($parts['path'] ?? '', '/api_jsonrpc.php')) {
             throw new RuntimeException('Use an HTTP or HTTPS URL ending in /api_jsonrpc.php without credentials.');
         }
+    }
+
+    public static function customInterval(int $days, int $hours, int $minutes): int {
+        if ($days < 0 || $days > intdiv(self::MAX_INTERVAL, 1440)
+                || $hours < 0 || $hours > 23 || $minutes < 0 || $minutes > 59) {
+            throw new RuntimeException('Invalid custom interval components.');
+        }
+        $interval = $days * 1440 + $hours * 60 + $minutes;
+        if ($interval < 1 || $interval > self::MAX_INTERVAL) {
+            throw new RuntimeException('Invalid custom interval total.');
+        }
+        return $interval;
     }
 
     public static function validate(string $operation, array $params): void {
@@ -56,7 +70,8 @@ final class Queue {
             $keys = array_keys($s);
             sort($keys);
             if ($keys !== ['categories', 'interval', 'repository_id'] || !is_int($s['repository_id'])
-                    || $s['repository_id'] <= 0 || !in_array($s['interval'], self::INTERVALS, true)
+                    || $s['repository_id'] <= 0 || !is_int($s['interval'])
+                    || $s['interval'] < 1 || $s['interval'] > self::MAX_INTERVAL
                     || !is_array($s['categories']) || !$s['categories']
                     || array_diff($s['categories'], self::CATEGORIES)
                     || count(array_unique($s['categories'])) !== count($s['categories'])) {
@@ -125,79 +140,101 @@ final class Queue {
         return $id;
     }
 
-    public static function synchronization(array $status): array {
+    public static function setup(array $status): array {
         $settings = $status['settings'] ?? [];
+        $repository = false;
+        foreach ($status['repositories'] ?? [] as $repo) {
+            if (($repo['private'] ?? false) === true && $repo['id'] == ($settings['repository_id'] ?? 0)) {
+                $repository = true;
+            }
+        }
+        $steps = [!empty($status['available_categories']), !empty($status['zabbix_configured']),
+            !empty($status['github_client_id']) && ($status['github'] ?? '') === 'Ready', $repository,
+            !empty($settings['categories']) && !empty($settings['interval']) && !empty($status['last_success'])];
+        $active = array_search(false, $steps, true);
+        // Existing installations go straight to the operational view, even after a failed attempt.
+        $operational = !empty($status['last_success']) || (!empty($settings['repository_id'])
+            && !empty($settings['categories']) && !empty($settings['interval'])
+            && empty($settings['sync_pending']) && ($status['state'] ?? '') !== 'Running');
+        return ['steps' => $steps, 'active' => $active === false ? 4 : $active, 'operational' => $operational];
+    }
+
+    public static function synchronization(array $status): array {
+        $setup = self::setup($status);
         $missing = [];
-        if (empty($status['available_categories'])) {
-            $missing[] = [_('Worker status is unavailable. Install the worker or check cron.'),
-                _('Open Overview'), 'gitkeeper-tab-overview'];
-        }
-        if (empty($status['github_client_id'])) {
-            $missing[] = [_('The GitHub App Client ID has not been saved.'),
-                _('Configure GitHub App'), 'gitkeeper-tab-github'];
-        }
-        if (($status['github'] ?? '') !== 'Ready') {
-            $missing[] = [_('GitHub authorization is not complete.'), _('Connect GitHub'), 'gitkeeper-tab-github'];
-        }
-        $repositories = array_column($status['repositories'] ?? [], 'id');
-        if (empty($settings['repository_id']) || !in_array($settings['repository_id'], $repositories)) {
-            $missing[] = [_('No accessible private repository has been selected.'),
-                _('Select a repository'), 'gitkeeper-tab-github'];
-        }
-        if (empty($status['zabbix_configured'])) {
-            $missing[] = [_('The Zabbix API token has not been configured and verified.'),
-                _('Configure Zabbix API'), 'gitkeeper-tab-api'];
-        }
-        $can_save = !$missing;
-        if (empty($settings['categories']) || empty($settings['interval'])) {
-            $missing[] = [_('Backup categories and the export interval have not been saved. Click Save & Sync to save them and start the first snapshot.'),
-                _('Open Configuration'), 'gitkeeper-tab-configuration'];
+        $reasons = [
+            [_('Stato del worker non disponibile.'), _('Verifica installazione')],
+            [_('Token API Zabbix non verificato.'), _('Configura Zabbix')],
+            [_('GitHub App non configurata o account non autorizzato.'), _('Collega GitHub')],
+            [_('Nessun repository privato accessibile selezionato.'), _('Scegli repository')],
+            [_('Categorie e frequenza non salvate.'), _('Salva e sincronizza')]
+        ];
+        foreach ($setup['steps'] as $step => $complete) {
+            if ($step === 4) {
+                $complete = !empty($status['settings']['categories']) && !empty($status['settings']['interval']);
+            }
+            if (!$complete) {
+                $missing[] = [...$reasons[$step], 'gitkeeper-step-'.$step];
+            }
         }
         $state = $status['state'] ?? '';
-        if (!empty($status['sync_request_pending'])) {
+        $op = $status['current_request']['operation'] ?? $status['operation'] ?? '';
+        $last_sync = $status['last_sync'] ?? [];
+        if ($state === 'Running' && in_array($op, ['save', 'sync'], true)) {
+            $phase = $op === 'save' ? 'Saving' : (($status['sync_phase'] ?? '') === 'Publishing' ? 'Publishing' : 'Running');
+        }
+        elseif (!empty($status['sync_request_pending']) || !empty($status['settings']['sync_pending'])) {
             $phase = 'Queued';
         }
-        elseif ($state === 'Running' && in_array($status['operation'] ?? '', ['save', 'sync'], true)) {
-            $phase = $missing ? 'Saving' : (($status['sync_phase'] ?? '') === 'Publishing' ? 'Publishing' : 'Running');
-        }
-        elseif (in_array($state, ['Failed', 'Partial / Incomplete'], true)
-                && in_array($status['operation'] ?? '', ['save', 'sync'], true)) {
+        elseif (($last_sync['state'] ?? '') === 'Failed'
+                || (in_array($state, ['Failed', 'Partial / Incomplete'], true) && in_array($op, ['save', 'sync'], true))) {
             $phase = 'Failed';
         }
         elseif ($missing) {
             $phase = 'Incomplete';
         }
-        elseif (!empty($settings['sync_pending'])) {
-            $phase = 'Queued';
-        }
         else {
-            $phase = $state === 'Completed' ? 'Completed' : 'Ready';
+            $phase = !empty($status['last_success']) ? 'Completed' : 'Ready';
         }
-        $labels = ['Incomplete' => _('Setup incomplete'), 'Queued' => _('Request queued'),
-            'Saving' => _('Validating and saving settings'), 'Running' => _('Snapshot in progress'),
-            'Publishing' => _('Publishing snapshot to GitHub'),
-            'Failed' => _('Synchronization failed'), 'Completed' => _('Snapshot completed'), 'Ready' => _('Configured')];
-        $messages = ['Incomplete' => _('Complete the missing setup steps below before starting a snapshot.'),
-            'Queued' => _('Your request was received. Processing starts automatically; if another operation is running, this request waits for it to finish. Do not submit it again.'),
-            'Saving' => _('The worker is checking the selected repository and API permissions before saving your settings.'),
-            'Running' => _('Settings are saved and the snapshot is in progress. Large categories can take several minutes. Follow the category results below.'),
-            'Publishing' => _('Configuration export is complete. The worker is preparing the Git commit and publishing it to the selected private repository. Wait for Snapshot completed.'),
-            'Failed' => _('The last save or snapshot failed. Check Last error below; the missing steps list shows whether setup still needs attention.'),
-            'Completed' => _('The snapshot completed successfully. See Last successful snapshot and Last commit below.'),
-            'Ready' => _('Setup is complete. Sync now creates a snapshot using the saved settings.')];
-        return ['ready' => !$missing, 'can_save' => $can_save, 'state' => $phase, 'label' => $labels[$phase],
-            'message' => $messages[$phase], 'missing' => $missing];
+        $labels = ['Incomplete' => _('Configurazione da completare'), 'Queued' => _('Richiesta in coda'),
+            'Saving' => _('Verifica prerequisiti e impostazioni'), 'Running' => _('Esportazione in corso'),
+            'Publishing' => _('Pubblicazione su GitHub'), 'Failed' => _('Sincronizzazione fallita'),
+            'Completed' => _('Snapshot pubblicato'), 'Ready' => _('Pronto per sincronizzare')];
+        $messages = ['Incomplete' => _('Completa i passaggi indicati per avviare uno snapshot.'),
+            'Queued' => _('Richiesta inviata. Se il worker è occupato, attende il termine dell’operazione corrente. Non inviarla di nuovo.'),
+            'Saving' => _('Il worker verifica repository, token e categorie prima di salvare le impostazioni.'),
+            'Running' => _('Le categorie vengono elaborate. L’esportazione può richiedere minuti; lo snapshot non è ancora pubblicato.'),
+            'Publishing' => _('Esportazione terminata. Preparazione del commit e pubblicazione su GitHub in corso.'),
+            'Failed' => _('Controlla l’errore e i risultati delle categorie. Puoi correggere le connessioni nelle Impostazioni o riprovare.'),
+            'Completed' => _('Snapshot pubblicato correttamente. Il collegamento al commit è disponibile nel riepilogo.'),
+            'Ready' => _('Avvia la sincronizzazione con le impostazioni salvate.')];
+        if ($phase === 'Completed' && ($last_sync['changed'] ?? $status['changed'] ?? null) === false) {
+            $labels['Completed'] = _('Nessuna modifica rilevata');
+            $messages['Completed'] = _('Sincronizzazione riuscita senza modifiche. Il commit esistente resta disponibile.');
+        }
+        return ['ready' => !$missing, 'can_save' => !array_filter($missing,
+                static fn($item) => $item[2] !== 'gitkeeper-step-4'),
+            'state' => $phase, 'label' => $labels[$phase], 'message' => $messages[$phase], 'missing' => $missing,
+            'error' => $last_sync['error'] ?? (in_array($op, ['save', 'sync'], true) ? ($status['error'] ?? null) : null)];
     }
 
-    public function status(string $api_request = '', string $sync_request = ''): array {
+    public function status(string $api_request = '', string $sync_request = '', string $request_id = ''): array {
         $file = $this->root.'/public/status.json';
         $status = is_readable($file) ? json_decode(file_get_contents($file), true, 64, JSON_THROW_ON_ERROR)
             : ['state' => 'Not configured', 'github' => 'Disconnected',
                 'error' => 'Worker status unavailable. Check installation and cron.'];
         $worker_state = $status['state'] ?? 'Not configured';
         $pending = glob($this->root.'/queue/*.json');
-        if ($pending) {
+        if ($pending && ($status['state'] ?? '') !== 'Running') {
             $status['state'] = 'Queued';
+        }
+        $status['worker_availability'] = is_readable($file) ? 'available'
+            : (is_dir($this->root.'/queue') ? 'unavailable' : 'not_installed');
+        $status['worker_stale'] = isset($status['updated_at']) && time() - $status['updated_at'] > 300;
+        // Migrate only the public summary for a pre-refactor failed snapshot, before another operation hides it.
+        if (empty($status['last_sync']) && in_array($worker_state, ['Failed', 'Partial / Incomplete'], true)
+                && in_array($status['operation'] ?? '', ['save', 'sync'], true)) {
+            $status['last_sync'] = ['state' => 'Failed', 'error' => $status['error'] ?? null];
         }
         $status['queued_requests'] = count($pending);
         // Match the redirected request by filename, without reading token-bearing queue contents.
@@ -209,6 +246,9 @@ final class Queue {
             && is_file($this->root.'/queue/'.$sync_request.'.json');
         // Unrelated queued operations must not hide an export already in progress.
         $status['synchronization'] = self::synchronization(array_replace($status, ['state' => $worker_state]));
+        $status['setup'] = self::setup($status);
+        $status['request_pending'] = preg_match('/^[a-f0-9]{32}$/D', $request_id)
+            && is_file($this->root.'/queue/'.$request_id.'.json');
         return $status;
     }
 }

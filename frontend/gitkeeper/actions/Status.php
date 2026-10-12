@@ -14,7 +14,7 @@ class Status extends CController {
     }
 
     protected function checkInput(): bool {
-        return $this->validateInput(['api_request' => 'string', 'sync_request' => 'string']);
+        return $this->validateInput(['api_request' => 'string', 'sync_request' => 'string', 'request_id' => 'string']);
     }
 
     protected function checkPermissions(): bool {
@@ -23,10 +23,13 @@ class Status extends CController {
 
     protected function doAction(): void {
         try {
-            $status = (new Queue())->status($this->getInput('api_request', ''), $this->getInput('sync_request', ''));
+            $status = (new Queue())->status($this->getInput('api_request', ''), $this->getInput('sync_request', ''), $this->getInput('request_id', ''));
         }
         catch (\Throwable $e) {
-            $status = ['state' => 'Failed', 'error' => 'Cannot read worker status.'];
+            $status = ['worker_availability' => 'unavailable', 'state' => 'Unavailable',
+                'error' => _('Stato del worker temporaneamente non disponibile. Verifica servizio e permessi.')];
+            $status['setup'] = Queue::setup($status);
+            $status['synchronization'] = Queue::synchronization($status);
         }
         $response = new CControllerResponseData(['main_block' => json_encode($status)]);
         $response->disableView();

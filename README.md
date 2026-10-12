@@ -1,16 +1,20 @@
 # Zabbix GitKeeper
 
+<p align="center">
+  <img src="frontend/gitkeeper/assets/img/logo-text.svg" alt="Zabbix GitKeeper" width="440">
+</p>
+
 **Version, audit, and recover your Zabbix configuration using GitHub.**
 
-> **Project status: experimental implementation; partial live verification on Zabbix 7.4.15, full integration not yet verified.** The first iteration implements the PHP module, local worker, GitHub App Device Flow, private repository selection/creation, scheduled secret-filtered snapshots and status reporting. The specification below also describes future features. No Zabbix/Linux installation profile is certified and no restore/disaster recovery is implemented. See [installation](docs/installation.md), [coverage](docs/coverage.md), [architecture](docs/architecture.md) and [validation](docs/validation.md) for the actual scope and evidence.
+> **Project status: experimental implementation; partial live verification on Zabbix 7.4.15, full integration not yet verified.** The first iteration implements the PHP module, local worker, GitHub App Device Flow, private repository selection/creation, scheduled snapshots including readable credentials and status reporting. The specification below also describes future features. No Zabbix/Linux installation profile is certified and no restore/disaster recovery is implemented. See [installation](docs/installation.md), [coverage](docs/coverage.md), [architecture](docs/architecture.md) and [validation](docs/validation.md) for the actual scope and evidence.
 
-**GitHub App configuration:** [Setup guide for maintainers and Zabbix administrators](docs/github-app.md). A single shared GitHub App is registered once; individual installations use Device Flow. No alternative GitHub authentication method is planned.
+**GitHub App configuration:** [Setup guide for maintainers and Zabbix administrators](docs/github-app.md). Each installation registers its own GitHub App, saves its own Client ID and authorizes an account through Device Flow. There is no official/shared App. No alternative GitHub authentication method is planned.
 
 Zabbix GitKeeper is a native Zabbix frontend module plus a lightweight local worker. After installation, an administrator connects a GitHub account, chooses or creates a **private** repository, selects the configuration categories to track, and saves. GitKeeper performs the first export automatically and continues on a configurable schedule. Errors, last run, and repository status are visible inside Zabbix.
 
 The product has **two complementary capabilities**, which must not be confused:
 
-1. **Configuration tracking:** human-readable, deterministic, secret-safe Git commits of the Zabbix configuration. Supports inspection, diffs, and selective/portable restore where the Zabbix API permits.
+1. **Configuration tracking:** human-readable, deterministic Git commits of readable Zabbix configuration, including readable credentials, in a private repository. Supports inspection and diffs; selective/portable restore remains a future capability.
 2. **Disaster recovery:** a separately scheduled, **encrypted** recovery package (database and explicitly supported local configuration files) stored as GitHub Release assets rather than ordinary Git commits. This is required to recover state that Zabbix APIs cannot export.
 
 A successful Git export **does not** by itself mean that a fresh Zabbix installation can be fully restored.
@@ -52,16 +56,16 @@ From **Administration → GitKeeper** (preferred location; use the closest offic
 4. GitKeeper securely stores the resulting user access/refresh token material on the VM; the token is never displayed or committed.
 5. Credentials refresh automatically where applicable; revoked/expired access must result in a visible **Reconnect GitHub** state.
 
-Each installation can use its own registered GitHub App. Save its **Client ID** in **Administration > GitKeeper > GitHub**, enable device flow and configure narrowly scoped permissions. Use **Metadata: read** and **Contents: read/write** for repository access. GitHub App user tokens are constrained by **both** user and installation permissions. Do not distribute the app's signing private key. Implement token refresh according to GitHub's documented device-flow rules; do not assume every token is permanent.
+Each installation must use its own registered GitHub App. Save its **Client ID** in **GitKeeper > Panoramica**, enable device flow and configure narrowly scoped permissions. Use **Metadata: read** and **Contents: read/write** for repository access. GitHub App user tokens are constrained by **both** user and installation permissions. Do not distribute the app's signing private key. Implement token refresh according to GitHub's documented device-flow rules; do not assume every token is permanent.
 
 ### 3. Select or create the destination
 
 - List repositories **actually accessible** to the authorized GitHub App and current user. Show account, repository, privacy, access status, and the selected branch.
-- In the GitHub tab, show the repository table and selector beside the dedicated private-repository creation form. **Use repository** saves the destination before API setup; changing it pauses synchronization until **Save & Sync**. Creation supports a personal account or organization and selects the new repository only after access verification.
+- In Panoramica during first setup, use a native private-repository selector and a collapsible creation form. Once configured, these controls are in Impostazioni > Connessioni. **Use repository** saves the destination before API setup; changing it pauses synchronization until **Save & Sync**. Creation supports a personal account or organization and selects the new repository only after access verification.
 - Offer **Create private repository** using the GitHub App **Repository creation: write** permission when granted. Do not request **Administration: write** solely to create backup repositories. Verify installation access to the newly created repository separately; otherwise guide the user to create it on GitHub and grant App access.
 - As a reliable first fallback, provide **Create on GitHub**, then refresh the repository list after GitHub App installation/access has been granted.
 - **Private** repositories are required for backup data. Reject a public target rather than silently publishing internal monitoring topology, user identities, and endpoint names.
-- Recommend a dedicated branch (for example `gitkeeper`); use an existing branch only after verifying write access and branch protection. Never force-push.
+- The implemented flow uses the selected repository's default branch. Check write access and branch protection; GitKeeper never force-pushes.
 
 ### 4. Choose what to export
 
@@ -80,7 +84,7 @@ The page offers **All supported categories**, plus independent checkboxes for:
 
 This is the **target coverage inventory**, **not** a promise that a single Zabbix API method exports every property. Implementation must maintain a **per-version coverage matrix** with status `exported`, `redacted`, `not-readable`, `not-supported` or `failed`. No category may be marked complete based merely on successful API responses.
 
-The administrator selects the cadence for **Git snapshots** (suggested default: 15 minutes) and separately, if enabled, the cadence for **encrypted recovery packages** (suggested default: daily). A full-database recovery package is always **whole-instance**; per-category checkboxes apply to the readable API snapshot, not to a database dump.
+The administrator selects the cadence for **Git snapshots** (default: once every 3 days), using presets or a custom interval in days, hours and minutes (minimum: one minute), and separately, if enabled, the cadence for **encrypted recovery packages** (suggested default: daily). A full-database recovery package is always **whole-instance**; per-category checkboxes apply to the readable API snapshot, not to a database dump.
 
 ### 5. Save & sync
 
@@ -93,11 +97,11 @@ The administrator selects the cadence for **Git snapshots** (suggested default: 
 
 ### Administration page
 
-Keep the native Zabbix look and interaction patterns. Prefer one page with four small sections/tabs: **Overview**, **GitHub**, **Backup scope & schedule**, **Restore**. Avoid an additional web framework.
+The implemented page uses two native tabs: **Panoramica** and **Impostazioni**. Panoramica guides first setup from persistent worker state, then shows the operational summary, category progress and snapshot result. Impostazioni groups synchronization, connections and advanced credential management. Polling updates results without automatic page reloads, preserves edited fields, pauses while hidden and resumes on return. Restore remains a future capability, without a restore tab.
 
-Actions: **Connect / Disconnect**, **Test connection**, **Save & sync**, **Sync now**, **Open repository**, **View last error**, **Check recovery readiness**, and **Start guided restore** (only where safe). Restrict configuration changes and restoration to authorized **Zabbix Super admins**. Respect Zabbix sessions and CSRF protections.
+Current actions cover connection checks, local credential management, private repository selection/creation, **Salva e sincronizza** and **Sincronizza ora**, with a link to the last commit. The module restricts access to **Zabbix Super admins** and retains native session and CSRF protections. Recovery-readiness checks and guided restore are future features.
 
-The page must visibly distinguish:
+The current page distinguishes a published snapshot from queued work, export, publication and failure. Future recovery features must additionally distinguish:
 
 - **Git snapshot healthy** — all selected readable categories exported and pushed.
 - **Portable restore readiness** — supported object coverage and missing secrets listed.
@@ -176,7 +180,7 @@ Git rules:
 - Remove obsolete managed files only after a **verified complete enumeration** of that category; never infer deletion from timeout, pagination failure or empty/error response.
 - Never force-push, silently reset history, or overwrite unrelated files in the selected repository.
 - Track the source Zabbix version, snapshot schema version, UTC export time **in commit/manifest metadata without creating a needless commit on unchanged configuration**, and the producing GitKeeper version. The mechanism must avoid a changing timestamp in tracked files when there is no real configuration change.
-- Keep authentication tokens, raw secrets, passwords, PSKs and encrypted recovery **private keys** out of normal commits. Redact sensitive fields before displaying diffs, logs or error messages.
+- Keep GitKeeper's GitHub/Zabbix authentication tokens and encrypted recovery **private keys** out of commits. Preserve configuration credentials returned by Zabbix in the private snapshot repository; do not expose them in public status, logs or error messages. Secret-text macro values and resolved Vault secrets unavailable through the API cannot be recovered by this export.
 
 ## Backup versus restore: explicit guarantees
 
@@ -204,7 +208,7 @@ When enabled, GitKeeper creates a **consistent native database backup** of the *
 - Encrypt the backup **before upload**, using a modern audited tool such as `age` and a **recovery public key** configured during setup.
 - The **recovery private key** must be exported once to the administrator and kept **outside GitHub and outside the backup archive**. Losing it makes the encrypted package unusable.
 - Publish encrypted packages as **private-repository GitHub Release assets**, not as large Git blobs; store a versioned manifest (source version, DB engine/version, files included, sizes, checksums and asset references) in the repository.
-- Default to a **daily** recovery schedule, independent of 15-minute Git snapshots; expose retention and available storage clearly. Never erase the last verified recovery package.
+- Default to a **daily** recovery schedule, independent of the 3-day Git snapshot default; expose retention and available storage clearly. Never erase the last verified recovery package.
 - Include a safe, explicit allowlist of supported files (server/frontend connection configuration and other required local assets). Arbitrary external scripts, TLS material, custom modules and other host-local dependencies are **not** included unless specifically supported/selected and confirmed in the manifest.
 - Before enabling, calculate approximate DB size and resource requirements. GitHub Release assets are limited to **less than 2 GiB per file**. Do not treat an oversized archive as successful; choose an explicitly implemented and tested multipart transfer or report that this backend cannot satisfy full recovery for the instance.
 - Validate encryption, archive integrity, checksums and manifest metadata before marking a recovery point healthy.
@@ -252,7 +256,7 @@ Use isolated fixtures and a small disposable Zabbix/database test setup. Do not 
 ## Delivery milestones
 
 1. **Foundation:** installable native Zabbix module, local cron worker, GitHub App device authorization, repository choice, settings and live status.
-2. **Safe Git snapshots:** deterministic export of hosts/templates plus dedicated API collectors; category completeness accounting, redaction, Git commits and error handling.
+2. **Safe Git snapshots:** deterministic export of hosts/templates plus dedicated API collectors; category completeness accounting, readable-credential preservation, Git commits and error handling.
 3. **Full user-managed configuration:** fill the per-version coverage matrix, implement remaining available exporters and portable restore with visible exceptions.
 4. **Disaster recovery:** encrypted native DB and local-config bundles, GitHub Release storage, retention, recovery-key UX and offline restore CLI; prove a full recovery round-trip.
 5. **Release readiness:** compatibility/upgrade validation for advertised Zabbix and DB versions, installer/uninstaller, threat review and concise admin documentation.

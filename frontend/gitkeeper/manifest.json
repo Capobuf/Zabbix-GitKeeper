@@ -11,5 +11,5 @@
     "gitkeeper.save": {"class": "Save"},
     "gitkeeper.status": {"class": "Status", "layout": "layout.json"}
   },
-  "assets": {"js": ["gitkeeper.js"]}
+  "assets": {"js": ["gitkeeper.js"], "css": ["gitkeeper.css"]}
 }

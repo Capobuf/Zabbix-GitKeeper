@@ -1,0 +1,26 @@
+#gitkeeper { max-width: 1200px; }
+#gitkeeper [hidden] { display: none !important; }
+#gitkeeper .gitkeeper-brand { margin: 0 0 16px; }
+#gitkeeper .gitkeeper-brand img { display: block; width: 112px; max-width: 100%; height: auto; }
+#gitkeeper .gitkeeper-step { margin: 12px 0; padding: 12px 0; }
+#gitkeeper .gitkeeper-sections { grid-template-columns: minmax(0, 1fr); }
+#gitkeeper .gitkeeper-sections > fieldset > legend,
+#gitkeeper .gitkeeper-sections > fieldset > .form-field { grid-column: 1 / -1; }
+#gitkeeper .gitkeeper-step > summary { cursor: pointer; font-weight: bold; }
+#gitkeeper p { margin: 10px 0; max-width: 85ch; line-height: 1.5; }
+#gitkeeper fieldset { margin: 16px 0; }
+#gitkeeper form { margin: 12px 0; }
+#gitkeeper #gitkeeper-device-code { font-size: 1.6em; letter-spacing: .12em; }
+#gitkeeper #gitkeeper-error:not(:empty) { margin-bottom: 16px; padding: 12px; border: 1px solid currentColor; white-space: pre-wrap; overflow-wrap: anywhere; }
+#gitkeeper #gitkeeper-worker-warning:not(:empty),
+#gitkeeper #gitkeeper-operation-feedback:not(:empty) { display: block; margin: 12px 0; }
+#gitkeeper pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+#gitkeeper input[type="text"], #gitkeeper input[type="password"],
+#gitkeeper textarea, #gitkeeper z-select { max-width: 100%; box-sizing: border-box; }
+#gitkeeper .table-forms-container { overflow-x: auto; }
+@media (max-width: 700px) {
+    #gitkeeper .form-grid { grid-template-columns: minmax(0, 1fr); }
+    #gitkeeper .form-grid > .form-field { grid-column: 1; }
+    #gitkeeper .gitkeeper-step { padding: 8px; }
+    #gitkeeper button { margin-bottom: 6px; }
+}

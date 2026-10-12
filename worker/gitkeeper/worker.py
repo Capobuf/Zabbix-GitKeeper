@@ -23,6 +23,9 @@ class Worker:
         self.queue = self.root / "queue"
         self.public = self.root / "public" / "status.json"
         self.status = read_json(self.public, {"state": "Not configured", "github": "Disconnected"})
+        if "last_sync" not in self.status and self.status.get("operation") in ("save", "sync") \
+                and self.status.get("state") in ("Failed", "Partial / Incomplete"):
+            self.status["last_sync"] = {"state": "Failed", "error": self.status.get("error")}
         self.config_path = self.private / "settings.json"
         self.config = read_json(self.config_path)
         self.app_path = self.private / "github-app.json"
@@ -52,10 +55,21 @@ class Worker:
             self.config.pop("next_sync", None)
         self.flush()
 
+    def sync_result(self, state: str) -> None:
+        # Keep the latest snapshot outcome independently of connection/credential checks.
+        self.status["last_sync"] = {"id": self.config.get("sync_request_id"), "state": state,
+                                    "error": self.status.get("error"), "at": time.time()}
+        if state == "Completed":
+            self.status["last_sync"]["changed"] = self.status["changed"]
+        result = self.status.get("last_result", {})
+        if self.config.get("sync_request_id") and result.get("id") == self.config["sync_request_id"]:
+            result.update(state=state, error=self.status.get("error"))
+
     def sync(self) -> None:
         if not self.config or not (self.private / "zabbix.json").exists():
             raise Error("Configure a Zabbix API token and save backup settings first.")
         self.status.update(state="Running", operation="sync", sync_phase="Exporting",
+                           current_request={"id": self.config.get("sync_request_id"), "operation": "sync"},
                            last_attempt=time.time(), categories={}, error=None)
         self.flush()
 
@@ -75,6 +89,7 @@ class Worker:
         self.config.update(next_sync=now + self.config["interval"] * 60, retry_count=0, sync_pending=False)
         self.status.update(state="Completed", last_success=now, last_commit=commit, changed=changed,
                            repository=repo, categories=coverage, error=None, github="Ready", reconnect=False)
+        self.sync_result("Completed")
         atomic_json(self.config_path, self.config)
         self.flush()
 
@@ -83,7 +98,7 @@ class Worker:
             self.config.update(repository_id=repo["id"], sync_pending=False, retry_count=0)
             for key in ("next_sync", "retry_at"):
                 self.config.pop(key, None)
-            for key in ("last_commit", "last_success", "last_attempt", "categories", "changed"):
+            for key in ("last_commit", "last_success", "last_attempt", "categories", "changed", "last_sync"):
                 self.status.pop(key, None)
         self.status.update(repository=repo, state="Ready")
 
@@ -105,7 +120,7 @@ class Worker:
                 atomic_json(self.app_path, {"client_id": params["client_id"]})
         elif op == "connect":
             if not self.github.client_id:
-                raise Error("Save your GitHub App Client ID in the GitHub tab before connecting.")
+                raise Error("Save your GitHub App Client ID before connecting.")
             self.github.disconnect()
             self.status.update(device=self.github.connect(), github="Disconnected", account=None,
                                reconnect=False, state="Disconnected")
@@ -148,12 +163,12 @@ class Worker:
             if not (self.private / "zabbix.json").exists():
                 raise Error("Configure and verify the Zabbix API token first.")
             Exporter(read_json(self.private / "zabbix.json")).check_permissions(selected["categories"])
-            self.config = {**selected, "sync_pending": True, "retry_count": 0}
+            self.config = {**selected, "sync_pending": True, "retry_count": 0, "sync_request_id": request["id"]}
             self.status.update(state="Queued", repository=repo)
         elif op == "sync":
             if not all(self.config.get(key) for key in ("repository_id", "categories", "interval")):
                 raise Error("Save backup settings first.")
-            self.config.update(sync_pending=True, retry_count=0)
+            self.config.update(sync_pending=True, retry_count=0, sync_request_id=request["id"])
             self.config.pop("retry_at", None)
             self.status["state"] = "Queued"
         atomic_json(self.config_path, self.config)
@@ -165,6 +180,8 @@ class Worker:
             if not re.fullmatch(r"[a-f0-9]{32}", request_id):
                 continue
             claimed = self.private / ("request-" + path.name)
+            operation = None
+            outcome = "Completed"
             try:
                 os.replace(path, claimed)
                 fd = os.open(claimed, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -176,17 +193,28 @@ class Worker:
                 request = command(data)
                 if request["id"] != request_id:
                     raise Error("Request filename mismatch.")
-                self.status.update(operation=request["operation"], state="Running", sync_phase=None)
+                operation = request["operation"]
+                self.status.update(operation=operation, state="Running", sync_phase=None,
+                                   current_request={"id": request_id, "operation": operation})
                 self.flush()
                 self.execute(request)
             except Exception as exc:
+                outcome = "Failed"
                 self.failure(exc)
+                if operation in ("save", "sync"):
+                    self.status["last_sync"] = {"id": request_id, "state": "Failed",
+                                                "error": self.status["error"], "at": time.time()}
                 verification = self.status.get("zabbix_verification", {})
                 if verification.get("id") == request_id and verification.get("state") == "Running":
                     verification.update(state="Failed", error=self.status["error"])
             finally:
                 claimed.unlink(missing_ok=True)
                 self.status["last_request"] = request_id
+                self.status["last_result"] = {"id": request_id, "operation": operation,
+                                              "state": "Queued" if outcome == "Completed"
+                                              and operation in ("save", "sync") else outcome,
+                                              "error": self.status.get("error")}
+                self.status["current_request"] = None
                 self.flush()
 
     def tick(self) -> None:
@@ -196,6 +224,9 @@ class Worker:
             # Reload only after locking: another process may have just committed state.
             self.config = read_json(self.config_path)
             self.status = read_json(self.public, self.status)
+            if "last_sync" not in self.status and self.status.get("operation") in ("save", "sync") \
+                    and self.status.get("state") in ("Failed", "Partial / Incomplete"):
+                self.status["last_sync"] = {"state": "Failed", "error": self.status.get("error")}
             self.github.client_id = read_json(self.app_path).get("client_id", self.install.get("client_id", ""))
             self.drain()
             try:
@@ -212,11 +243,15 @@ class Worker:
             now = time.time()
             due = self.config.get("sync_pending") or now >= self.config.get("next_sync", float("inf"))
             if due and now >= self.config.get("retry_at", 0) and self.github.path.exists():
+                if not self.config.get("sync_pending"):
+                    # A scheduled snapshot is not the outcome of an older manual request.
+                    self.config.pop("sync_request_id", None)
                 try:
                     self.sync()
                     self.config.pop("retry_at", None)
                 except Exception as exc:
                     self.failure(exc)
+                    self.sync_result("Failed")
                     count = self.config.get("retry_count", 0) + 1
                     self.config.update(retry_count=count, sync_pending=False)
                     if isinstance(exc, Transient) and count <= 3:
@@ -225,6 +260,8 @@ class Worker:
                         # No endless retries: an explicit Sync now/Save & Sync is required.
                         self.config.pop("next_sync", None)
                         self.config.pop("retry_at", None)
+                finally:
+                    self.status["current_request"] = None
             atomic_json(self.config_path, self.config)
             self.flush()
 

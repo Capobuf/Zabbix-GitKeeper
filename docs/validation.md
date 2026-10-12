@@ -1,5 +1,22 @@
 # Validation evidence and remaining acceptance checks
 
+## Readable configuration and credentials, 2026-10-12
+
+The export policy now preserves previously omitted readable configuration and credentials:
+item keys, trigger expressions, preprocessing, text macros, Vault references, inventory, web scenarios,
+action conditions/messages, media-type credentials/scripts/parameters and user-media recipients.
+Missing/empty secret-text macro values retain an unreadable marker; resolved Vault secrets are not
+provided by native export. Worker authentication tokens remain outside snapshots and public status.
+Manifest schema 2 identifies this policy, and publication accepts existing schema-1 repositories.
+Earlier redaction evidence below describes the previous policy and does not establish live acceptance
+of the new payload coverage.
+
+Local checks: Ruff passed; Python ran 44 tests successfully (one POSIX lock test skipped on Windows);
+PHP view lint, frontend controller/queue contracts, frontend polling regressions and `git diff --check`
+passed. Fixtures exercise 7.0/7.4 readable payloads, unreadable macro markers, contextual macros,
+deterministic export and schema migration. A real local Git regression verifies that changing only
+an action message creates a commit. No live Zabbix check or GitHub push was performed for this change.
+
 Local development environment: Windows, Python 3.12, PHP CLI and native Git. Initial automated
 validation used synthetic data. Subsequent read-only checks used the supplied Zabbix 7.4.15 instance
 on Ubuntu 24.04.5, Apache 2.4.58, PHP 8.3.6 and Python 3.12.3. Neither target series is certified.
@@ -294,7 +311,8 @@ python -m build worker
 
 The unit suite uses synthetic Zabbix/GitHub APIs and **real native Git/local bare repositories**.
 It checks configuration/whitelist validation, deterministic version fixtures, semantic list order,
-sentinel redaction, unknown-field rejection, complete enumeration/native item checks, privacy/access,
+readable configuration/credential preservation, unavailable macro markers, unknown-field rejection,
+complete enumeration/native item checks, privacy/access,
 OAuth polling/refresh/revocation, safe public errors, scheduling/backoff, one-commit/no-change behavior,
 host/template/action diffs, failed-export/push preservation and foreign-file protection.
 POSIX process-lock testing is skipped on Windows and runs in Linux CI. PHP tests use controller contract
@@ -324,7 +342,8 @@ On a disposable Linux VM for **each** 7.0/7.4 profile to be advertised:
    revocation. Verify denied API roles produce errors and a partial-visibility account is rejected.
 6. Build expected host/template/item/trigger/LLD/action/media/user/group/role inventories, including
    webhook, script, SNMP and secret macro examples. Compare actual snapshots to expected covered fields;
-   verify omissions and that test secret sentinels never reach tracked files/public status/errors.
+   verify readable configuration/credential sentinels are present in snapshots, unavailable values are
+   identified, and GitKeeper authentication tokens/API values never leak into public status/errors.
 7. Save settings, close the browser, observe cron produce one private GitHub commit. Repeat unchanged,
    then modify a tracked field. Verify cadence, object-deletion handling and manifest checksums.
 8. Induce incomplete API export, revoked access, network failure, protected branch, remote divergence,
@@ -336,3 +355,136 @@ On a disposable Linux VM for **each** 7.0/7.4 profile to be advertised:
 Do not mark iteration acceptance or publish a stable release until this full sequence succeeds on at
 least one target version. Full restore/disaster recovery belongs to later milestones and needs its own
 successful recovery onto an empty instance; nothing in the current test suite establishes that capability.
+
+## Native UI/UX refactor — 2026-10-12
+
+The earlier four-tab UI and references to a maintainer/shared GitHub App above are historical evidence.
+The current procedure uses **Panoramica** and **Impostazioni**, and each installation registers its own
+App. No shared Client ID is distributed. Device Flow is enabled manually. The registration link uses
+the verified homepage/description, Contents write, webhook, OAuth-installation and availability parameters.
+Repository creation write is an explicit optional manual setting: its registration query name has not
+been verified, so no guessed URL parameter is emitted.
+
+Source checks completed for this refactor:
+
+- PHP lint for all frontend/test files and `php tests/frontend.php`: passed. Contracts cover Super admin
+  permissions, native CSRF, token consent/secrecy, queue validation, setup and synchronization states.
+- `node tests/frontend-poll.cjs`: passed against the actual asset with lightweight DOM/status doubles.
+  Covers empty/missing-worker setup, API verification, Device Flow pending/expired/denied, authorization
+  distinct from installation access, private repository selection, native synthetic selection events,
+  unsaved fields, progress/publication, persistent snapshot errors, request correlation, duplicate submits,
+  visibility/no overlap, unavailable status and expired sessions. No browser E2E framework was added.
+- Ruff and Python compilation: passed. **48 Python tests passed on Linux**, including the real process
+  lock. Windows ran the same suite with the POSIX-only lock test skipped. New regressions cover claimed
+  request correlation, failed synchronization surviving another successful operation/restart, publication
+  preceding success, unchanged commit retention, and scheduled snapshots not reusing old manual IDs.
+- Worker sdist/wheel build and shell syntax checks: passed. Installer smoke/ShellCheck were not rerun in
+  this session; the unchanged CI still includes them. The installer smoke is for disposable CI runners,
+  never the existing live server. Python tests can be rerun with `python -m unittest discover -s tests -v -f`
+  to stop on the first failure.
+
+Live observations on the existing **Zabbix 7.4.15** instance:
+
+- Updated the native module and only the worker's public state/correlation code. Existing credentials,
+  repository, categories and interval were retained. The pre-update code was backed up on the server.
+  The unrelated local readable-credentials exporter/policy edits were not deployed for this UI test;
+  live results therefore still use the earlier redaction policy.
+- Both tabs rendered, native fieldsets expanded/collapsed, and no JavaScript warnings/errors were
+  reported. An existing long export and a new UI-triggered export advanced host/template counts through
+  polling without automatic navigation. The prior successful timestamp/commit stayed visible while busy.
+- A native **Sincronizza ora** POST was accepted, the service processed the correlated request and the UI
+  showed publication success. Commit `d07012bf51653fb2994f0123e08d66012b0e4d9a` was also verified on GitHub.
+  The theme test overlapped that export and its temporary high-contrast preference was captured in the
+  user configuration; the original preference was restored and a further snapshot completed at 09:51:53
+  CEST. Commit `5ec4bef4a74be79bd21022aa66c8f206ef051e0c` was verified on GitHub to restore `theme: default`.
+- Client ID text, a changed native interval and an unchecked category survived subsequent status updates
+  without being submitted. Test edits were discarded afterward. The browser was returned to Panoramica.
+- A subsequent native **Verifica connessione** POST retained the Impostazioni tab and showed its own
+  completed result. The connection section remained reopenable, its Client ID link expanded the native
+  advanced fieldset, and the last snapshot timestamp/commit remained unchanged.
+- Native blue and high-contrast-light stylesheets were selected successfully, then the original system
+  theme was restored. Dark Reader overrides the visible colors in this browser, so this does **not** prove
+  the original light/high-contrast appearance. The viewport override did not change the observed 2560px
+  layout; it was reset, and narrow-screen visual acceptance remains pending.
+
+Not exercised live in this session: a clean 7.0 installation, fresh App registration/Device Flow and token
+creation, permission-denied/new-repository cases, induced export/push failures, and installer rerun/uninstall.
+Opening GitHub App registration reached GitHub's access-verification screen; no new App or permission was
+created. Fixture checks are evidence for their contracts, not certification of those complete live flows.
+The full acceptance sequence above, inventory comparisons and readable-credentials live acceptance remain
+required before release claims. Restore and complete disaster recovery remain unimplemented.
+
+### Default cadence update — 2026-10-12
+
+The default for new configurations is now **once every 3 days** (4320 minutes). Both queue validators
+accept this interval and the native selector exposes **3 giorni**. Previously saved schedules are retained.
+PHP lint/contracts, Node polling checks, Ruff and the Python configuration/queue regression passed.
+The frontend and worker interval validator were updated on the existing instance, with deployed file
+hashes checked against source. The earlier 15-minute observations above remain historical evidence.
+
+## Live readable-policy migration — 2026-10-12
+
+The installed worker still had the old redaction policy: its schema-1 snapshot contained
+`<omitted: potentially sensitive>` in 428 of 439 JSON files. Updating the frontend alone had not
+changed that policy. Installed the local worker wheel through the existing virtual environment's pip,
+with the worker lock held, and verified every packaged worker file against the installed bytes.
+The previous package and CLI were backed up under
+`/var/backups/zabbix-gitkeeper/readable-policy-20261012-_min0fj9/`. Private JSON state was unchanged
+during installation; the existing repository, categories, credentials and 15-minute interval were retained.
+
+Queued one native `sync` request (`aec4eb3b226b40a6b90832720c340362`) and ran it through the existing
+systemd service. All selected categories completed: actions 5, hosts/groups 26, media types 39,
+templates/groups 376 (364 templates) and users/groups/roles 12. Publication completed at 10:12:56 CEST:
+commit `444deec9d1a89d14de0a090b20e32425302fb545` in the private destination repository.
+
+Verification after publication:
+
+- GitHub `main` points to the reported commit. The GitHub commit tree and manifest match the local
+  published snapshot; all 438 data-file checksums passed.
+- The schema-2 snapshot has 439 JSON files and **zero** files containing the old omission marker.
+  The documented `<not-readable: secret macro>` marker remains in 115 files.
+- The previous successful commit `5ec4bef4a74be79bd21022aa66c8f206ef051e0c` is the direct parent;
+  only `gitkeeper/` files changed. A normal commit/push updated already tracked files, without rewriting
+  history or force-pushing. Historic snapshots retain their old values and omission markers.
+- Local worker build, Ruff with `worker/pyproject.toml`, and 48 Python tests passed (the POSIX-only
+  lock test was skipped on Windows). No new synchronization mechanism was required.
+
+This verifies the live migration and complete selected-collector publication on Zabbix 7.4.15.
+It does not complete the field-by-field inventory or fresh-installation acceptance sequence above.
+
+## Supplied branding — 2026-10-12
+
+The three original SVG logos are organized in `branding/` as `logo-black.svg`, `logo-white.svg` and
+`logo-text.svg`. Their contents were preserved when moving/renaming them. The module's `assets/img/`
+copies keep the supplied artwork with a tighter SVG viewport, removing unused canvas space.
+README uses the logo with text; the GitKeeper page uses native `CImg` and `CView::getAssetsPath()`.
+Native `getUserTheme()` selects the white variant for `dark-theme`/`hc-dark`, otherwise the black variant.
+The existing installer already copies these assets; no installer or worker changes were needed.
+
+PHP view lint and the frontend controller/queue contracts passed. The updated view, stylesheet and
+three SVG assets were deployed to the existing 7.4.15 module, with installed bytes verified against
+the package. Previous frontend files were backed up under
+`/var/backups/zabbix-gitkeeper/branding-20261012-ntipcp16/`.
+A separate browser tab verified that the black logo loads from the module-relative URL and renders
+at 112 by approximately 33 pixels. The original browser tab and its form contents were preserved.
+No theme preference was changed for this check; live selection of the white variant was not exercised.
+
+## Custom synchronization intervals — 2026-10-12
+
+The existing presets and 3-day default remain available. **Personalizzato** exposes native number
+inputs for days, hours (0–23) and minutes (0–59), with a minimum total of one minute. PHP converts
+the components to total minutes; queue and worker validate positive integers up to the native int32
+limit. The existing settings/queue schema and completion-based scheduler are unchanged.
+Overview displays the duration in days, hours and minutes. Polling preserves custom duration drafts.
+
+PHP lint and controller/queue tests, JavaScript polling tests, Ruff and all 48 Python tests passed
+locally (the POSIX lock test was skipped on Windows). On the existing Linux instance, the POSIX lock,
+interval validation and custom completion-based scheduling tests also passed. The worker wheel and
+four frontend files were deployed and their installed bytes verified; private JSON state was unchanged
+during deployment. Previous files were backed up under
+`/var/backups/zabbix-gitkeeper/interval-20261012-90_0n_c7/`.
+
+A separate browser tab verified the preset/custom switch and native fields on Zabbix 7.4.15.
+A zero duration produced a validation error; a draft of 1 day, 2 hours and 30 minutes was valid.
+No settings were submitted or synchronization queued during this browser check. Custom save handoff
+and scheduling were exercised by isolated controller and worker tests, not by changing the live schedule.

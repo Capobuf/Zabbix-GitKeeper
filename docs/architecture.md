@@ -4,6 +4,12 @@ The native PHP module registers Administration → GitKeeper using Zabbix's menu
 All controllers require Super admin. Mutations use default native `CController` CSRF checking and POST
 forms with the exact module action token. Read-only view/status actions disable CSRF checks.
 The frontend uses native Zabbix components, with a small read-only status polling script.
+The page has two tabs (Panoramica and Impostazioni); setup is derived from public worker state.
+Native POST forms retain CSRF and redirects. A single visibility-aware polling loop updates status,
+category counts, authorization codes and repository options without automatic page reloads or loss of edits.
+The latest snapshot outcome (`last_sync`) is independent of `last_result` for other operations.
+`current_request` identifies a request after the secret-bearing queue file is claimed; none of these
+public summaries includes parameters or credentials. Only latest outcomes are retained, not job history.
 
 PHP writes atomically renamed JSON requests; it never invokes a shell. A native systemd path unit
 watches finalized `queue/*.json` files and starts the worker immediately. The one-minute cron starts
@@ -47,13 +53,17 @@ transaction exists; same-count concurrent edits across categories cannot be prov
 changing configuration while collecting snapshots. Graph/host prototypes are retained by native export
 but not independently counted; this limitation is explicit in coverage.
 
-Raw responses exist only in worker memory. Context-specific serialization policies reject unclassified
-fields and omit confidential values/free-form payloads, including text macro values, item keys,
-expressions, SNMP/HTTP credentials, arbitrary parameters, scripts, inventory, descriptions and webhook
-values. Identities, names, permissions and structural/scheduling fields remain confidential metadata.
-An empty string is never used to impersonate an unreadable secret. Exclusions are listed in the manifest.
-Future versions/fields require a policy review. Intentionally omitted subtrees are not traversed; their
-entire contents are excluded, including unknown nested fields. Coverage is limited accordingly.
+Context-specific serialization policies preserve readable configuration and credentials, including
+text macro values, Vault references, item keys, expressions, SNMP/HTTP credentials, preprocessing,
+scripts, inventory, web scenarios, descriptions and webhook parameters. Payload subtrees retain all
+returned fields and array order; unclassified fields in explicitly reviewed structures still stop
+the snapshot. Native export timestamps are removed to avoid commits for unchanged configuration.
+Secret-text macro values missing or empty in the native export are marked as unreadable and listed
+in the manifest; readable values are never replaced with a confidentiality placeholder. Vault references
+are preserved, but resolved Vault secrets are not returned by native export. User passwords, API tokens
+and MFA secrets are not collected. Worker authentication tokens remain outside snapshots and public status.
+Snapshots contain plaintext credentials returned by Zabbix and must remain in the private repository.
+Manifest schema 2 identifies this readable-credentials policy; schema 1 snapshots used broad redaction.
 
 Each export is prepared in a worker-only temporary directory. All selected categories must succeed
 before a deterministic manifest with checksums is produced. Only then does Git create a temporary
@@ -78,9 +88,9 @@ after a snapshot was uploaded. Restrict destination administration accordingly.
 ## Explicit limits
 
 No portable restore, database dump, encryption/recovery package, multi-instance mode or complete
-user-managed configuration inventory is implemented. Sanitized native-shaped JSON must not be blindly
-fed to `configuration.import`: omitted fields require a future schema-aware restore tool. No full-recovery
-readiness is claimed. Lower-privilege API roles, richer payload policies and remaining categories are
+user-managed configuration inventory is implemented. Snapshot JSON must not be blindly
+fed to `configuration.import`: unreadable markers and the snapshot envelope require a future schema-aware restore tool. No full-recovery
+readiness is claimed. Lower-privilege API roles and remaining categories are
 future coverage work. Installation detection and live frontend behavior still require deployment tests.
 
 References: [Zabbix module manifest](https://www.zabbix.com/documentation/7.0/en/devel/modules/file_structure/manifest),

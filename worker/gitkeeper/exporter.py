@@ -139,12 +139,14 @@ class Exporter:
                 "output": ["mediatypeid", "name", "type", "status", "smtp_port", "smtp_security",
                            "smtp_verify_peer", "smtp_verify_host", "smtp_authentication", "maxsessions",
                            "maxattempts", "attempt_interval", "message_format", "timeout", "process_tags",
-                           "show_event_menu", "provider"], "selectMessageTemplates": "extend"})]
+                           "show_event_menu", "provider", "smtp_server", "smtp_helo", "smtp_email",
+                           "exec_path", "gsm_modem", "username", "passwd", "script", "parameters",
+                           "event_menu_url", "event_menu_name", "description"], "selectMessageTemplates": "extend"})]
         else:
             collectors = [
                 ("user", "userid", "user", {"output": ["userid", "username", "name", "surname", "roleid",
-                 "autologin", "autologout", "lang", "refresh", "theme", "rows_per_page", "userdirectoryid"],
-                 "selectUsrgrps": ["usrgrpid"], "selectMedias": ["mediaid", "mediatypeid", "active", "severity", "period"]}),
+                 "autologin", "autologout", "lang", "refresh", "theme", "rows_per_page", "userdirectoryid", "url"],
+                 "selectUsrgrps": ["usrgrpid"], "selectMedias": ["mediaid", "mediatypeid", "active", "severity", "period", "sendto"]}),
                 ("usergroup", "usrgrpid", "user_group", {"output": ["usrgrpid", "name", "gui_access", "users_status",
                  "debug_mode", "userdirectoryid", "mfa_status", "mfaid"], "selectHostGroupRights": ["id", "permission"],
                  "selectTemplateGroupRights": ["id", "permission"], "selectTagFilters": ["groupid", "tag", "value"]}),
@@ -156,10 +158,8 @@ class Exporter:
             for row in rows:
                 self.write(stage / category / method / f"{row[id_field]}.json", sanitize(row, context, excluded))
             total += len(rows)
-        if category == "media_types":
-            excluded.add("/media_types/credentials_scripts_parameters_endpoints")
         if category == "users":
-            excluded.add("/users/passwords_tokens_mfa_secrets_media_recipients")
+            excluded.add("/users/passwords_tokens_mfa_secrets")
         return total
 
     @staticmethod
@@ -192,8 +192,8 @@ class Exporter:
                 progress(category, "Exported", coverage[category])
         checksums = {str(p.relative_to(stage)).replace("\\", "/"): hashlib.sha256(p.read_bytes()).hexdigest()
                      for p in sorted(stage.rglob("*.json"))}
-        manifest = {"schema": 1, "gitkeeper_version": __version__, "zabbix_version": self.version,
+        manifest = {"schema": 2, "gitkeeper_version": __version__, "zabbix_version": self.version,
                     "coverage": coverage, "checksums": checksums, "restore_ready": False,
-                    "guarantee": "Complete enumeration of selected scope; confidential payloads omitted. No full recovery."}
+                    "guarantee": "Complete enumeration of selected scope; readable configuration and credentials preserved. No full recovery."}
         self.write(stage / "manifest.json", manifest)
         return coverage

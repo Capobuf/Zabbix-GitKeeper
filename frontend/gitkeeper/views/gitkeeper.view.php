@@ -1,431 +1,324 @@
 <?php
 use Modules\GitKeeper\Queue;
 use Modules\GitKeeper\Installation;
-
 require_once __DIR__.'/../includes/Installation.php';
 
 $status = $data['status'];
 $settings = $status['settings'] ?? [];
 $available = $status['available_categories'] ?? [];
+$setup = $status['setup'] ?? Queue::setup($status);
+$sync = $status['synchronization'] ?? Queue::synchronization($status);
+$status['setup'] = $setup;
+$status['synchronization'] = $sync;
 $worker_ready = (bool) $available;
 $github_ready = ($status['github'] ?? '') === 'Ready';
-$app_ready = !empty($status['github_client_id']);
 $api_ready = !empty($status['zabbix_configured']);
-$selected_repository = null;
-foreach ($status['repositories'] ?? [] as $repo) {
-    if ($repo['id'] == ($settings['repository_id'] ?? 0)) {
-        $selected_repository = $repo;
-    }
-}
-$api_url = $data['api_url'];
-$labels = ['hosts' => _('Hosts and host groups'), 'templates' => _('Templates and template groups'),
-    'actions' => _('Actions'), 'media_types' => _('Media types'), 'users' => _('Users, groups and roles')];
-
+$labels = ['hosts' => _('Host e gruppi'), 'templates' => _('Template e gruppi'),
+    'actions' => _('Azioni'), 'media_types' => _('Tipi di supporto'), 'users' => _('Utenti, gruppi e ruoli')];
+$ui = [
+    'complete' => _('Completato'), 'todo' => _('Da completare'), 'running' => _('In corso'),
+    'failed' => _('Errore'), 'processed' => _('Elaborata'), 'waiting' => _('In attesa'),
+    'sent' => _('Richiesta inviata. Attendi l’esito del worker.'),
+    'queued' => _('Richiesta in coda. Se il worker è occupato, attende il termine dell’operazione corrente.'),
+    'done' => _('Operazione completata.'),
+    'unavailable' => _('Stato temporaneamente non disponibile. Il worker continua autonomamente; nuovo tentativo automatico.'),
+    'session' => _('Sessione scaduta o accesso non consentito. Accedi nuovamente a Zabbix e riapri GitKeeper.'),
+    'stale' => _('Lo stato non viene aggiornato da oltre 5 minuti. Verifica il servizio se l’attesa continua; un’esportazione lunga può essere ancora in corso.'),
+    'installed' => _('GitKeeper installato.'), 'not_installed' => _('Worker non installato.'),
+    'worker_unavailable' => _('Installazione presente, ma stato del worker non disponibile. Verifica servizio e permessi.'),
+    'authorized' => _('Account autorizzato'), 'disconnected' => _('Account non autorizzato'),
+    'device_pending' => _('In attesa di autorizzazione su GitHub'), 'expired' => _('Codice scaduto. Ricollega GitHub.'),
+    'api_verified' => _('Token verificato e salvato'), 'api_absent' => _('Token non configurato'),
+    'api_running' => _('Verifica del token in corso'), 'api_failed' => _('Verifica del token fallita'),
+    'app_saved' => _('Client ID salvato'), 'app_absent' => _('Client ID da salvare'),
+    'access' => _('App installata con accesso in lettura e scrittura ai repository elencati.'),
+    'no_access' => _('Nessun repository privato accessibile. Verifica l’installazione sull’account proprietario, Contents read/write e l’accesso dell’utente; poi aggiorna l’elenco.'),
+    'select' => _('Scegli un repository privato'), 'none' => _('Nessun repository selezionato'),
+    'paused' => _('Pianificazione sospesa'), 'minutes' => _('minuti'), 'hours' => _('ore'),
+    'days' => _('giorni'), 'day' => _('giorno'), 'hour' => _('ora'), 'minute' => _('minuto'),
+    'three_days' => _('3 giorni'),
+    'intervals' => Queue::INTERVALS, 'max_interval' => Queue::MAX_INTERVAL,
+    'invalid_interval' => _('Inserisci un intervallo totale di almeno un minuto entro il limite supportato.'),
+    'default_interval' => Queue::DEFAULT_INTERVAL, 'copied' => _('Copiato'),
+    'copy_failed' => _('Seleziona e copia manualmente.'), 'unknown_result' => _('Esito della richiesta non più disponibile; consulta gli stati persistenti delle connessioni e della sincronizzazione.'),
+    'change_app' => _('Cambiare App? L’autorizzazione GitHub locale e la scelta del repository saranno rimosse e la pianificazione sospesa. App e repository su GitHub rimangono invariati.'),
+    'http' => _('HTTP trasmette il token senza cifratura. Per un endpoint locale usa, quando verificato, l’indirizzo loopback.'),
+    'category_states' => ['Running' => _('In elaborazione'), 'Completed' => _('Elaborata'),
+        'exported' => _('Elaborata'), 'Exported' => _('Elaborata'),
+        'Failed' => _('Errore'), 'Partial / Incomplete' => _('Incompleta')]
+];
 $form = static function(string $id): CForm {
     return (new CForm('post', (new CUrl('zabbix.php'))->setArgument('action', 'gitkeeper.save')->getUrl()))
-        ->setId('gitkeeper-form-'.$id)
+        ->setId('gitkeeper-form-'.$id)->setAttribute('data-gitkeeper-form', '1')
         ->addItem((new CVar(CSRF_TOKEN_NAME, CCsrfTokenHelper::get('gitkeeper.save')))->removeId());
 };
-$submit = static function(string $operation, string $caption, bool $enabled, bool $secondary = false): CSubmit {
+$submit = static function(string $operation, string $caption, bool $enabled = true, bool $secondary = false,
+        string $confirmation = ''): CSubmit {
     $button = (new CSubmit('operation', $caption))->setId('gitkeeper-submit-'.$operation)
         ->setAttribute('value', $operation)->setEnabled($enabled);
+    if ($confirmation !== '') { $button->setAttribute('data-confirm', $confirmation); }
     return $secondary ? $button->addClass(ZBX_STYLE_BTN_ALT) : $button;
 };
-$row = static function(CFormGrid $grid, string $label, $field, ?string $id = null): CFormGrid {
-    return $grid->addItem([new CLabel($label, $id), new CFormField($field)]);
+$row = static function(CFormGrid $grid, string $label, $field, ?string $id = null): void {
+    $grid->addItem([new CLabel($label, $id), new CFormField($field)]);
 };
-$note = static function(string $text): CFormField {
-    return (new CFormField((new CTag('p', true, $text))->addClass(ZBX_STYLE_GREY)))
-        ->addClass(CFormField::ZBX_STYLE_FORM_FIELD_OFFSET_1);
+$paragraph = static fn(string $text) => (new CTag('p', true, $text))->addClass(ZBX_STYLE_GREY);
+$span = static fn(string $id, $value = '') => (new CSpan($value))->setId('gitkeeper-'.$id);
+$time = static fn($value) => is_numeric($value) ? date('Y-m-d H:i:s T', (int) $value) : '—';
+$frequency = static function(int $minutes) use ($ui): string {
+    $parts = [intdiv($minutes, 1440), intdiv($minutes % 1440, 60), $minutes % 60];
+    $labels = [['day', 'days'], ['hour', 'hours'], ['minute', 'minutes']];
+    $result = [];
+    foreach ($parts as $index => $value) {
+        if ($value) { $result[] = $value.' '.$ui[$labels[$index][$value === 1 ? 0 : 1]]; }
+    }
+    return implode(' ', $result);
 };
-$time = static function($value): string {
-    return is_numeric($value) ? date('Y-m-d H:i:s T', (int) $value) : '-';
+$step = static function(int $index, string $title, string $explanation, $body) use ($setup, $ui): CTag {
+    $details = (new CTag('details', true, [new CTag('summary', true, [
+        $index.'. '.$title.' — ', (new CSpan($setup['steps'][$index] ? $ui['complete'] : $ui['todo']))
+            ->setId('gitkeeper-step-status-'.$index)]), new CTag('p', true, $explanation), $body]))
+        ->setId('gitkeeper-step-'.$index)->addClass('gitkeeper-step');
+    if ($setup['active'] === $index && !$setup['operational']) { $details->setAttribute('open', 'open'); }
+    return $details;
 };
-if (!$worker_ready) {
-    $next_step = _('Install the worker using the command below.');
-}
-elseif (!$app_ready) {
-    $next_step = _('Open GitHub and save your App Client ID.');
-}
-elseif (!$github_ready) {
-    $next_step = !empty($status['device'])
-        ? _('Open GitHub, enter the authorization code and return here. This page checks the result automatically.')
-        : _('Open GitHub and click Connect GitHub to authorize your account.');
-}
-elseif (!$selected_repository) {
-    $next_step = _('Open GitHub and select an existing private repository or create a new one.');
-}
-elseif (!$api_ready) {
-    $next_step = _('Open Zabbix API and verify a token to allow configuration exports.');
-}
-elseif (empty($settings['categories']) || empty($settings['interval'])) {
-    $next_step = _('Open Configuration, choose what to export and click Save & Sync.');
-}
-else {
-    $next_step = _('Setup is complete. Use Sync now for a snapshot or Configuration to change the schedule.');
-}
 
-$synchronization = $status['synchronization'] ?? Queue::synchronization($status);
-$sync_requirements = $synchronization['missing'];
-$sync_ready = $synchronization['ready'];
-$sync_busy = in_array($synchronization['state'], ['Queued', 'Saving', 'Running', 'Publishing'], true);
-if ($synchronization['state'] !== 'Incomplete') {
-    $next_step = $synchronization['message'];
-}
-
-$overview = (new CFormGrid())->setId('gitkeeper-overview');
-$overview->setAttribute('data-sync-request', $data['sync_request'] ?? '');
-$overview->setAttribute('data-fingerprint', json_encode([$status['last_request'] ?? null, $status['state'] ?? null,
-    $status['device'] ?? null, $status['last_commit'] ?? null, $status['account'] ?? null]));
-$row($overview, _('Next step'), (new CSpan($next_step))->setId('gitkeeper-next-step'));
-$row($overview, _('Synchronization'), (new CSpan($synchronization['label']))
-    ->setId('gitkeeper-synchronization')->setAttribute('role', 'status')
-    ->addClass(in_array($synchronization['state'], ['Incomplete', 'Failed'], true) ? ZBX_STYLE_RED
-        : ($sync_busy ? ZBX_STYLE_GREY : ZBX_STYLE_GREEN)));
-foreach (['state' => _('Worker status'), 'github' => _('GitHub'), 'account' => _('Account')] as $key => $label) {
-    $row($overview, $label, (new CSpan($status[$key] ?? '-'))->setId('gitkeeper-'.$key));
-}
-$row($overview, _('Zabbix API'), $api_ready ? _('Configured') : _('Not configured'));
-$row($overview, _('Zabbix version'), $status['zabbix_version'] ?? ZABBIX_VERSION);
-$repository = $status['repository']['full_name'] ?? null;
-$row($overview, _('Repository'), $repository ? new CLink($repository, 'https://github.com/'.$repository) : '-');
-foreach (['last_attempt' => _('Last attempt'), 'last_success' => _('Last successful snapshot')] as $key => $label) {
-    $row($overview, $label, $time($status[$key] ?? null));
-}
-$row($overview, _('Next synchronization'), $time($settings['next_sync'] ?? null));
-$commit = $status['last_commit'] ?? null;
-$row($overview, _('Last commit'), $commit && $repository
-    ? new CLink(substr($commit, 0, 12), 'https://github.com/'.$repository.'/commit/'.$commit) : '-');
-$row($overview, _('Last error'), (new CSpan($status['error'] ?? '-'))->setId('gitkeeper-error'));
-$overview->addItem($note(_('Snapshots track the selected readable configuration. Confidential payloads are omitted; restore and disaster recovery are not available.')));
-$overview_body = [$overview];
+$installation = [$span('installation-state', $worker_ready ? $ui['installed']
+    : (($status['worker_availability'] ?? '') === 'not_installed' ? $ui['not_installed'] : $ui['worker_unavailable']))];
 if (!$worker_ready) {
-    $installation = new CFormGrid();
     $frontend_root = realpath(__DIR__.'/../../..');
     $web_user = function_exists('posix_geteuid') && function_exists('posix_getpwuid')
         ? posix_getpwuid(posix_geteuid()) : false;
     if ($frontend_root && is_file($frontend_root.'/zabbix.php')
             && is_file($frontend_root.'/include/defines.inc.php') && $web_user && $web_user['name'] !== 'root') {
-        $command = Installation::command($frontend_root, $web_user['name']);
-        $command_id = 'gitkeeper-install-command';
-        $installation->addItem($note(_('Copy this command into a Bash terminal on the Zabbix server. The frontend path and PHP process user are detected automatically. The command downloads main and installs the module, worker and cron. After installation, configure your App Client ID in the GitHub tab.')));
-        $row($installation, _('Installation command'),
-            (new CTextArea($command_id, $command, ['rows' => 9, 'readonly' => true]))
-                ->disableSpellcheck()->setAdaptiveWidth(900), $command_id);
-        $installation->addItem((new CFormField([
-            (new CButton('gitkeeper-copy-install', _('Copy')))->addClass(ZBX_STYLE_BTN_ALT),
-            ' ', (new CSpan())->setId('gitkeeper-copy-result')->setAttribute('role', 'status')
-                ->setAttribute('data-copied', _('Copied'))
-                ->setAttribute('data-fallback', _('Select and copy the command manually.'))
-        ]))->addClass(CFormField::ZBX_STYLE_FORM_FIELD_OFFSET_1));
-        $installation->addItem($note(_('Prerequisites: Python 3.10+ with venv/pip, Git, PHP, systemd and cron. After installation, restart your PHP-FPM/Apache service to apply group permissions, then reload this page.')));
+        $installation[] = $paragraph(_('Esegui il comando in Bash sul server Zabbix. Dopo l’installazione riavvia il servizio PHP/Apache effettivo per applicare i permessi e riapri questa pagina.'));
+        $installation[] = (new CTextArea('gitkeeper-install-command', Installation::command($frontend_root, $web_user['name']),
+            ['rows' => 9, 'readonly' => true]))->disableSpellcheck()->setAdaptiveWidth(900);
+        $installation[] = (new CButton('gitkeeper-copy-install', _('Copia')))
+            ->setAttribute('data-copy', 'gitkeeper-install-command')->addClass(ZBX_STYLE_BTN_ALT);
+    }
+    $installation[] = new CLink(_('Guida di installazione e diagnostica'),
+        'https://github.com/Capobuf/Zabbix-GitKeeper/blob/main/docs/installation.md');
+}
+$steps = [$step(0, _('Verifica installazione'), _('Il worker elabora le richieste e gli snapshot sul server.'), $installation)];
+
+$api_forms = [];
+foreach (['bootstrap', 'api'] as $mode) {
+    $grid = new CFormGrid();
+    if ($mode === 'bootstrap') {
+        $row($grid, _('Consenso'), (new CCheckBox('consent', 1))->setLabel(
+            _('Autorizzo la creazione di un token senza scadenza che eredita i permessi del mio account.'))
+                ->setAttribute('required', true), 'consent');
     }
     else {
-        $installation->addItem($note(_('Cannot detect the frontend path and PHP process user. Follow the installation guide and pass the verified --frontend-root and --web-user values.')));
+        $row($grid, _('Token esistente'), (new CTextBox('api_token'))->setAttribute('type', 'password')
+            ->setAttribute('autocomplete', 'new-password')->setAttribute('maxlength', 64)
+            ->setAttribute('required', true), 'api_token');
     }
-    $overview_body[] = (new CTag('h4', true, _('Worker installation')))->addClass('input-section-header');
-    $overview_body[] = $installation;
+    $advanced = new CFormGrid();
+    $url_id = 'gitkeeper-'.$mode.'-url';
+    $row($advanced, _('URL API'), (new CTextBox('api_url', $data['api_url']))->setId($url_id)
+        ->setAttribute('required', true)->setAttribute('placeholder', 'https://zabbix.example/api_jsonrpc.php')
+        ->setWidth(ZBX_TEXTAREA_STANDARD_WIDTH), $url_id);
+    $row($advanced, _('Certificati HTTPS'), (new CCheckBox('tls_skip_verify', 1))->setId('gitkeeper-'.$mode.'-tls')
+        ->setChecked(($status['zabbix_verify_tls'] ?? true) === false)
+        ->setLabel(_('Consenti certificati non validi o autofirmati (disabilita la verifica).')));
+    $advanced->addItem(new CFormField($paragraph(_('La verifica TLS è abilitata per impostazione predefinita. Il token viene salvato soltanto dopo la verifica del worker.'))));
+    $api_forms[$mode] = $form($mode)->addItem($grid)->addItem(
+        (new CFormGrid())->addClass('gitkeeper-sections')->addItem(
+            (new CFormFieldsetCollapsible(_('Opzioni avanzate API'), new CFormField($advanced)))
+                ->setExpanded($data['api_url'] === '')))
+        ->addItem(makeFormFooter($submit($mode === 'bootstrap' ? 'create_zabbix_token' : 'set_zabbix',
+            $mode === 'bootstrap' ? _('Crea e verifica token') : _('Verifica e usa token'), $worker_ready)));
 }
-$table = (new CTable())->setId('gitkeeper-category-results')
-    ->setHeader([_('Category'), _('Result'), _('Objects'), _('Hosts/templates processed'), _('Excluded fields')]);
-foreach ($labels as $category => $label) {
-    $result = $status['categories'][$category] ?? [];
-    $category_row = (new CRow([$label,
-        (new CSpan($result['state'] ?? '-'))->setId('gitkeeper-category-state-'.$category),
-        (new CSpan($result['objects'] ?? '-'))->setId('gitkeeper-category-objects-'.$category),
-        (new CSpan(isset($result['total']) ? ($result['processed'] ?? 0).' / '.$result['total'] : '-'))
-            ->setId('gitkeeper-category-progress-'.$category),
-        (new CSpan(count($result['excluded_fields'] ?? [])))->setId('gitkeeper-category-excluded-'.$category)
-    ]))->setId('gitkeeper-category-row-'.$category);
-    if (!$result) {
-        $category_row->setAttribute('hidden', 'hidden');
-    }
-    $table->addRow($category_row);
-}
-if (empty($status['categories'])) {
-    $table->setAttribute('hidden', 'hidden');
-}
-$overview_body[] = $table;
-$sync_form = $form('sync');
-$sync_feedback = (new CSpan($synchronization['message']))->setId('gitkeeper-sync-feedback')
-    ->setAttribute('role', 'status')->setAttribute('aria-live', 'polite')
-    ->setAttribute('data-submitting', _('Submitting snapshot request...'))
-    ->setAttribute('data-unavailable', _('Synchronization status unavailable. Reload the page and check your session.'));
-$missing = (new CList())->setId('gitkeeper-sync-requirements');
-foreach ($sync_requirements as [$reason, $action, $tab]) {
-    $missing->addItem([$reason, ' ', (new CLink($action, '#'.$tab))->setAttribute('data-gitkeeper-tab', $tab)]);
-}
-$blocked = (new CTag('h4', true, _('Sync now is unavailable: complete these steps first.')))
-    ->setId('gitkeeper-sync-blocked')->addClass(ZBX_STYLE_RED);
-if ($sync_ready || $sync_busy) {
-    $blocked->setAttribute('hidden', 'hidden');
-    $missing->setAttribute('hidden', 'hidden');
-}
-$sync_form->addItem([$blocked, $missing]);
-$sync_button = $submit('sync', _('Sync now'), $sync_ready && !$sync_busy)
-    ->setAttribute('aria-describedby', 'gitkeeper-sync-feedback gitkeeper-sync-requirements');
-$overview_body[] = $sync_form->addItem(makeFormFooter($sync_button))->addItem($sync_feedback);
+$steps[] = $step(1, _('Accesso alla configurazione Zabbix'),
+    _('Crea un token attraverso le API native Zabbix. Il worker lo usa anche quando il browser è chiuso.'), [
+        $span('api-verification', $api_ready ? $ui['api_verified'] : $ui['api_absent'])->setAttribute('role', 'status'),
+        $span('api-verification-error', $status['zabbix_verification']['error'] ?? '')->addClass(ZBX_STYLE_RED),
+        $paragraph($data['api_url_source']), $span('api-url-warning'), $api_forms['bootstrap'],
+        new CTag('details', true, [new CTag('summary', true, _('Usa un token esistente')), $api_forms['api']])
+    ]);
 
-$github = new CFormGrid();
-$row($github, _('Connection'), (new CSpan($github_ready ? _('Connected')
-    : (!empty($status['device']) ? _('Awaiting authorization') : _('Disconnected'))))
-    ->setId('gitkeeper-connection-github')->setAttribute('data-connected', _('Connected'))
-    ->setAttribute('data-disconnected', _('Disconnected'))
-    ->setAttribute('data-pending', _('Awaiting authorization')));
-$row($github, _('Account'), (new CSpan($status['account'] ?? '-'))->setId('gitkeeper-connection-account'));
-$row($github, _('Last error'), (new CSpan($status['error'] ?? '-'))
-    ->setId('gitkeeper-connection-error')->setAttribute('role', 'status'));
-if (!empty($status['device'])) {
-    $row($github, _('Authorization code'), new CTag('strong', true, $status['device']['user_code']));
-    $row($github, _('Authorization'), new CLink(_('Authorize on GitHub'), 'https://github.com/login/device'));
-    $github->addItem($note(_('Click Authorize on GitHub and enter this code. After authorizing your account, return here: the connection updates automatically. Repository access is configured separately in step 3.')));
-}
-elseif ($github_ready) {
-    $github->addItem($note($selected_repository ? $next_step
-        : _('Your account is connected. Continue with step 3 to choose the repository that will receive your snapshots.')));
-}
-elseif (!$worker_ready || !$app_ready) {
-    $github->addItem($note(!$worker_ready ? _('Install the worker from Overview before connecting GitHub.')
-        : _('Save the Client ID in step 1 to enable Connect GitHub.')));
-}
-else {
-    $github->addItem($note(_('Click Connect GitHub. An authorization code and an Authorize on GitHub link will appear here when the worker processes the request. This page updates automatically.')));
-}
-$connection_actions = [];
-if ($github_ready) {
-    $connection_actions[] = $submit('test_github', _('Check GitHub connection'), $worker_ready, true);
-}
-if ($github_ready || !empty($status['device'])) {
-    $connection_actions[] = $submit('disconnect', $github_ready ? _('Disconnect GitHub') : _('Cancel authorization'),
-        $worker_ready, true);
-}
-$github_connection = $form('github')->addItem($github)->addItem(makeFormFooter(
-    !$github_ready && empty($status['device'])
-        ? $submit('connect', !empty($status['reconnect']) ? _('Reconnect GitHub') : _('Connect GitHub'),
-            $worker_ready && $app_ready) : null,
-    $connection_actions
-));
-$create = new CFormGrid();
-$owner = $selected_repository ? explode('/', $selected_repository['full_name'])[0] : ($status['account'] ?? '');
-$row($create, _('Owner (account or organization)'),
-    (new CTextBox('repository_owner', $owner))->setWidth(ZBX_TEXTAREA_MEDIUM_WIDTH)
-        ->setAttribute('maxlength', 100), 'repository_owner');
-$row($create, _('New private repository name'),
-    (new CTextBox('repository_name'))->setWidth(ZBX_TEXTAREA_MEDIUM_WIDTH)
-        ->setAttribute('maxlength', 100), 'repository_name');
-$create->addItem($note(_('Creates a private repository for this backup and selects it after verifying App access. For an organization, replace the owner with its GitHub name. No snapshot is sent until Save & Sync.')));
-$create->addItem($note(_('Requires Repository creation permission on the App. If GitHub creates the repository but the App cannot access it, grant access and click Refresh repositories above; do not create it again.')));
-$repository_list = (new CTable())->addClass(ZBX_STYLE_LIST_TABLE)
-    ->setHeader([_('Repository'), _('Visibility'), _('Access'), _('Branch')]);
-foreach ($status['repositories'] ?? [] as $repo) {
-    $repository_list->addRow([new CLink($repo['full_name'], 'https://github.com/'.$repo['full_name']),
-        _('Private'), _('Read and write'), $repo['default_branch']]);
-}
-if (empty($status['repositories'])) {
-    $repository_list->addRow([(new CCol(_('No accessible private repositories')))->setColSpan(4)]);
-}
-$destination = new CFormGrid();
-$repository_id = $settings['repository_id'] ?? 0;
-if (!$repository_id && count($status['repositories'] ?? []) === 1) {
-    $repository_id = $status['repositories'][0]['id'];
-    $destination->addItem($note(_('One repository is available. Click Use repository to confirm it as the destination.')));
-}
-$repositories = (new CSelect('repository_id'))->setId('gitkeeper-repository')->setFocusableElementId('gitkeeper-repository-focus')
-    ->setValue($repository_id)->setWidth(ZBX_TEXTAREA_STANDARD_WIDTH);
-$repositories->addOption(new CSelectOption(0, _('Select a private repository')));
-foreach ($status['repositories'] ?? [] as $repo) {
-    $repositories->addOption(new CSelectOption($repo['id'], $repo['full_name'].' ('.$repo['default_branch'].')'));
-}
-if (!empty($status['repositories'])) {
-    $row($destination, _('Choose destination'), $repositories, 'gitkeeper-repository-focus');
-}
-$row($destination, _('Selected destination'), $selected_repository
-    ? new CLink($selected_repository['full_name'], 'https://github.com/'.$selected_repository['full_name'])
-    : _('No repository selected'));
-if ($github_ready && empty($status['repositories'])) {
-    $destination->addItem($note(_('Your account is connected, but no private repository is available to this App. On GitHub, install the App for the repository owner (your account or organization), allow access to the destination repository, then click Refresh repositories.')));
-    $destination->addItem($note(_('The App needs Contents read and write permission, and your account must have push access. To use a new repository, create one below or on GitHub, then grant App access.')));
-}
-elseif (!$github_ready) {
-    $destination->addItem($note(_('Connect your account in step 2 before loading or creating repositories.')));
-}
-else {
-    $destination->addItem($note(_('Choose a repository and click Use repository. Changing the destination pauses synchronization until you click Save & Sync in Configuration.')));
-}
-$row($destination, _('App access'), new CLink(_('Manage repository access on GitHub'), 'https://github.com/settings/installations'));
-$app = new CFormGrid();
-$row($app, _('GitHub App Client ID'),
+// Only documented registration parameters; Device Flow is enabled manually on GitHub.
+$registration_params = ['description' => 'Zabbix GitKeeper configuration snapshots',
+    'url' => 'https://github.com/Capobuf/Zabbix-GitKeeper', 'contents' => 'write',
+    'webhook_active' => 'false', 'request_oauth_on_install' => 'false', 'public' => 'false'];
+$registration_url = 'https://github.com/settings/apps/new?'.http_build_query($registration_params);
+$app_grid = new CFormGrid();
+$row($app_grid, _('Client ID della tua GitHub App'),
     (new CTextBox('client_id', $status['github_client_id'] ?? ''))->setAttribute('maxlength', 128)
         ->setAttribute('autocomplete', 'off')->setWidth(ZBX_TEXTAREA_STANDARD_WIDTH), 'client_id');
-$app->addItem($note(_('Open GitHub App settings, copy Client ID and enable Device Flow. Paste the Client ID here and click Save Client ID. The numeric App ID is a different value.')));
-if (ctype_digit($status['github_client_id'] ?? '')) {
-    $app->addItem($note(_('The saved value is numeric. Verify that you copied the Client ID, not the App ID, from your GitHub App settings.')));
-}
-$app_details = (new CTag('details', true, [new CTag('summary', true, _('What happens if I change the App?')),
-    new CTag('p', true, _('Changing the Client ID disconnects the current App and pauses synchronization. Connect again and select a repository. Saving the same Client ID keeps the connection. No client secret or private key is required.'))]));
-$app->addItem((new CFormField($app_details))->addClass(CFormField::ZBX_STYLE_FORM_FIELD_OFFSET_1));
-if (!$worker_ready) {
-    $app->addItem($note(_('Install the worker from Overview first; then save your App Client ID here.')));
-}
-$github_body = [
-    (new CTag('h4', true, _('1. Configure the GitHub App')))->addClass('input-section-header'),
-    $form('github-app')->addItem($app)->addItem(makeFormFooter(
-        $submit('set_github_app', _('Save Client ID'), $worker_ready),
-        [new CLink(_('GitHub App settings'), 'https://github.com/settings/apps')])),
-    (new CTag('h4', true, _('2. Connect your GitHub account')))->addClass('input-section-header'),
-    $github_connection,
-    (new CTag('h4', true, _('3. Choose the backup repository')))->addClass('input-section-header'),
-    $repository_list, $form('repository')->addItem($destination)->addItem(makeFormFooter(
-        !empty($status['repositories']) ? $submit('select_repository', _('Use repository'), $worker_ready && $github_ready) : null,
-        [$submit('repositories', _('Refresh repositories'), $worker_ready && $github_ready, true)])),
-    (new CTag('h4', true, _('Or create a new private repository')))->addClass('input-section-header'),
-    $form('create-repository')->addItem($create)->addItem(makeFormFooter(
-    $submit('create_repository', _('Create and select private repository'), $worker_ready && $github_ready),
-    [new CLink(_('Create on GitHub'), 'https://github.com/new')]
-))];
+$app_config = (new CDiv([
+    (new CLink(_('Crea la tua GitHub App'), $registration_url))->setId('gitkeeper-register-app'),
+    $paragraph(_('Scegli un nome univoco. Abilita manualmente Device Flow e lascia abilitata la scadenza dei token utente. Nessun webhook, callback URL, Client Secret o chiave privata richiesto. L’autorizzazione OAuth durante l’installazione non serve.')),
+    new CTag('details', true, [new CTag('summary', true, _('Repository di un’organizzazione o creazione da GitKeeper')),
+        $paragraph(_('Per un’organizzazione registra preferibilmente l’App nelle sue Developer settings. Deve essere installabile sull’account proprietario: un’App privata personale non è automaticamente installabile in un’altra organizzazione.')),
+        (new CTextBox('gitkeeper-app-organization'))->setAttribute('placeholder', _('Nome organizzazione')),
+        ' ', (new CCheckBox('gitkeeper-app-creation', 1))->setLabel(_('Creerò il repository da GitKeeper (Repository creation: write).')),
+        $paragraph(_('La creazione da GitKeeper richiede un permesso aggiuntivo; lascialo disabilitato se userai un repository esistente.')),
+        (new CTag('p', true, _('Nelle impostazioni GitHub abilita manualmente Repository creation: write. Il collegamento usa solo parametri URL verificati.')))
+            ->setId('gitkeeper-app-creation-guide')->setAttribute('hidden', 'hidden')]),
+    $paragraph(_('Copia il Client ID dalle impostazioni dell’App: è diverso dall’App ID numerico. Cambiare Client ID disconnette GitHub e sospende la pianificazione; salvare lo stesso ID conserva il collegamento.')),
+    $form('app')->addItem($app_grid)->addItem(makeFormFooter($submit('set_github_app', _('Salva Client ID'), $worker_ready))),
+    $span('app-state', !empty($status['github_client_id']) ? $ui['app_saved'] : $ui['app_absent'])
+]))->setId('gitkeeper-app-config')->setAttribute('data-registration-url', $registration_url);
+$github_grid = new CFormGrid();
+$row($github_grid, _('Autorizzazione account'), $span('connection', $github_ready ? $ui['authorized'] : $ui['disconnected']));
+$row($github_grid, _('Account'), $span('account', $status['account'] ?? '—'));
+$row($github_grid, _('Esito del collegamento'), $span('connection-error')->setAttribute('role', 'status'));
+$device = (new CDiv([
+    (new CTag('strong', true, $status['device']['user_code'] ?? ''))->setId('gitkeeper-device-code'), ' ',
+    (new CButton('gitkeeper-copy-device', _('Copia codice')))->setAttribute('data-copy', 'gitkeeper-device-code')->addClass(ZBX_STYLE_BTN_ALT),
+    ' ', new CLink(_('Autorizza su GitHub'), 'https://github.com/login/device'),
+    $paragraph(_('Inserisci il codice su GitHub e torna qui per l’esito. Questo autorizza l’account; l’installazione dell’App è un passaggio distinto.'))
+]))->setId('gitkeeper-device');
+if (empty($status['device'])) { $device->setAttribute('hidden', 'hidden'); }
+$steps[] = $step(2, _('Crea e collega la tua GitHub App'),
+    _('Ogni installazione usa la propria App. Registra l’App, salva il Client ID, poi autorizza il tuo account.'), [
+        $app_config,
+        (new CLink(_('Modifica il Client ID nelle opzioni avanzate'), '#gitkeeper-settings-app'))->setId('gitkeeper-app-settings-link'),
+        $github_grid, $device,
+        $form('github')->addItem(makeFormFooter($submit('connect', _('Collega / ricollega GitHub'),
+            $worker_ready && !empty($status['github_client_id']) && !$github_ready && empty($status['device'])), [
+                $submit('test_github', _('Verifica connessione'), $worker_ready && $github_ready, true)])),
+        $span('installation-access', !empty($status['repositories']) ? $ui['access'] : $ui['no_access']),
+        new CTag('p', true, new CLink(_('Gestisci le GitHub App installate'), 'https://github.com/settings/installations'))
+    ]);
 
-$bootstrap = new CFormGrid();
-$bootstrap_url_id = 'gitkeeper-bootstrap-url';
-$row($bootstrap, _('API URL'), (new CTextBox('api_url', $api_url))->setId($bootstrap_url_id)
-    ->setWidth(ZBX_TEXTAREA_STANDARD_WIDTH)->setAttribute('required', true)
-    ->setAttribute('pattern', 'https?://[^\\s]+/api_jsonrpc\\.php')
-    ->setAttribute('title', _('Use an HTTP or HTTPS URL ending in /api_jsonrpc.php.'))
-    ->setAttribute('placeholder', 'https://zabbix.example/zabbix/api_jsonrpc.php'),
-    $bootstrap_url_id);
-$row($bootstrap, _('HTTPS certificate'), (new CCheckBox('tls_skip_verify', 1))
-    ->setId('gitkeeper-bootstrap-tls')->setChecked(($status['zabbix_verify_tls'] ?? true) === false)
-    ->setLabel(_('Allow an invalid or self-signed certificate (skip verification).')), 'gitkeeper-bootstrap-tls');
-$row($bootstrap, _('Consent'), (new CCheckBox('consent', 1))
-    ->setLabel(_('Create a non-expiring token that inherits my current account permissions.'))
-    ->setAttribute('required', true), 'consent');
-$bootstrap->addItem($note(_('A Super admin API token is required. The worker uses it independently of your browser session.')));
-$api = new CFormGrid();
-$existing_url_id = 'gitkeeper-existing-url';
-$row($api, _('API URL'), (new CTextBox('api_url', $api_url))->setId($existing_url_id)
-    ->setWidth(ZBX_TEXTAREA_STANDARD_WIDTH)->setAttribute('required', true)
-    ->setAttribute('pattern', 'https?://[^\\s]+/api_jsonrpc\\.php')
-    ->setAttribute('title', _('Use an HTTP or HTTPS URL ending in /api_jsonrpc.php.'))
-    ->setAttribute('placeholder', 'https://zabbix.example/zabbix/api_jsonrpc.php'),
-    $existing_url_id);
-$row($api, _('HTTPS certificate'), (new CCheckBox('tls_skip_verify', 1))
-    ->setId('gitkeeper-existing-tls')->setChecked(($status['zabbix_verify_tls'] ?? true) === false)
-    ->setLabel(_('Allow an invalid or self-signed certificate (skip verification).')), 'gitkeeper-existing-tls');
-$row($api, _('Existing API token'), (new CTextBox('api_token'))->setAttribute('type', 'password')
-    ->setAttribute('autocomplete', 'new-password')->setAttribute('required', true)
-    ->setAttribute('pattern', '[a-fA-F0-9]{64}')
-    ->setAttribute('title', _('Enter the complete 64-character API token.'))
-    ->setWidth(ZBX_TEXTAREA_STANDARD_WIDTH), 'api_token');
-$verification_titles = ['Queued' => _('Token verification queued'), 'Running' => _('Verifying the token...'),
-    'Verified' => _('Token verified and saved'), 'Failed' => _('Token verification failed'),
-    'Removed' => _('Stored token removed'), 'Not configured' => _('API token not configured'),
-    'Submitting' => _('Submitting token setup...'), 'Unavailable' => _('Verification status unavailable')];
-$verification_messages = [
-    'Queued' => _('Your request was received. Verification starts automatically; if another operation is running, wait for it to finish. This result updates automatically.'),
-    'Running' => _('The worker is checking API access and required permissions. Wait for the result here.'),
-    'Verified' => _('The token passed verification and was saved securely. Zabbix API setup is complete.'),
-    'Failed' => _('The submitted token was not activated. Check the error below before retrying. Any previous verified token remains stored.'),
-    'Removed' => _('The worker no longer has an API token. Create or verify a token to enable exports.'),
-    'Not configured' => _('Create a token or submit an existing one below. Setup completes only when this panel confirms verification.'),
-    'Submitting' => _('Sending your request. Token creation and verification are separate steps; wait for the verification result.'),
-    'Unavailable' => _('The verification result could not be retrieved. Reload the page and check your session; this does not mean the token failed.')
-];
-$verification = $status['zabbix_verification'] ?? [];
-$verification_state = $verification['state'] ?? ($api_ready ? 'Verified' : 'Not configured');
-if (!isset($verification_titles[$verification_state])) {
-    $verification_state = 'Unavailable';
+$repository_grid = new CFormGrid();
+$repos = array_values(array_filter($status['repositories'] ?? [], static fn($repo) => ($repo['private'] ?? false) === true));
+$repository_id = $settings['repository_id'] ?? (count($repos) === 1 ? $repos[0]['id'] : 0);
+$selector = (new CSelect('repository_id'))->setId('gitkeeper-repository')->setFocusableElementId('gitkeeper-repository-focus')
+    ->setValue($repository_id)->setWidth(ZBX_TEXTAREA_STANDARD_WIDTH)->addOption(new CSelectOption(0, $ui['select']));
+foreach ($repos as $repo) {
+    // Native ZSelect evaluates its option labels as HTML templates.
+    $selector->addOption(new CSelectOption($repo['id'],
+        htmlspecialchars($repo['full_name'].' ('.$repo['default_branch'].')', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')));
 }
-$verification_color = $verification_state === 'Verified' ? ZBX_STYLE_GREEN
-    : ($verification_state === 'Failed' ? ZBX_STYLE_RED : ZBX_STYLE_GREY);
-$verification_next = (new CTag('p', true, (new CLink(_('Next: open Configuration and click Save & Sync to start a snapshot.'),
-    '#gitkeeper-tab-configuration'))->setAttribute('data-gitkeeper-tab', 'gitkeeper-tab-configuration')))
-    ->setId('gitkeeper-api-verification-next');
-if ($verification_state !== 'Verified') {
-    $verification_next->setAttribute('hidden', 'hidden');
-}
-$verification_panel = (new CDiv([
-    (new CTag('h4', true, $verification_titles[$verification_state]))
-        ->setId('gitkeeper-api-verification-title')->addClass($verification_color),
-    (new CTag('p', true, $verification_messages[$verification_state]))->setId('gitkeeper-api-verification-message'),
-    (new CTag('p', true, $verification['error'] ?? ''))->setId('gitkeeper-api-verification-error')->addClass(ZBX_STYLE_RED),
-    $verification_next
-]))->setId('gitkeeper-api-verification')->setAttribute('role', 'status')->setAttribute('aria-live', 'polite')
-    ->setAttribute('data-titles', $verification_titles)->setAttribute('data-messages', $verification_messages)
-    ->setAttribute('data-request-id', $data['api_request'] ?? '');
-$api_body = [
-    $verification_panel,
-    $row(new CFormGrid(), _('Zabbix API'), (new CSpan($api_ready ? _('Configured') : _('Not configured')))
-        ->setId('gitkeeper-api-configured')->setAttribute('data-configured', _('Configured'))
-        ->setAttribute('data-unconfigured', _('Not configured')))
-        ->addItem([new CLabel(_('Worker status')), new CFormField(
-            (new CSpan($status['state'] ?? '-'))->setId('gitkeeper-api-state')->setAttribute('role', 'status'))])
-        ->addItem([new CLabel(_('Last error')), new CFormField(
-            (new CSpan($status['error'] ?? '-'))->setId('gitkeeper-api-error')->setAttribute('role', 'status'))])
-        ->addItem($note(_('After submission, verification starts automatically. If the worker is busy, your request waits. Follow the verification result above.')))
-        ->addItem($note($api_ready
-            ? _('The API token is configured. To replace it, create or verify another token below.')
-            : _('Create a token below, or use an existing Super admin token. Configuration exports become available after verification succeeds.')))
-        ->addItem($note(_('The API address is prefilled from this installation. Change it only if the worker needs a different address.')))
-        ->addItem((new CFormField((new CSpan($data['api_url_source']))->setId('gitkeeper-api-url-source')
-            ->setAttribute('data-current-label', _('Current frontend address'))
-            ->setAttribute('data-custom-label', _('Custom API address'))))
-            ->addClass(CFormField::ZBX_STYLE_FORM_FIELD_OFFSET_1))
-        ->addItem((new CFormField((new CSpan())->setId('gitkeeper-api-url-warning')->setAttribute('role', 'status')
-            ->setAttribute('data-http-warning', _('HTTP sends the API token without encryption. For a local frontend, you can use 127.0.0.1 to keep worker traffic on this server.'))))
-            ->addClass(CFormField::ZBX_STYLE_FORM_FIELD_OFFSET_1)),
-    (new CFormGrid())->addItem((new CFormField([
-        (new CButton('gitkeeper-use-loopback', _('Use 127.0.0.1')))->addClass(ZBX_STYLE_BTN_ALT),
-        ' ', _('Uses the current scheme, port and path. The worker verifies this address before saving; name-based virtual hosts may require the original hostname.')
-    ]))->addClass(CFormField::ZBX_STYLE_FORM_FIELD_OFFSET_1)),
-    (new CTag('h4', true, _('Create a Zabbix API token')))->addClass('input-section-header'),
-    $form('bootstrap')->addItem($bootstrap)->addItem(makeFormFooter(
-        $submit('create_zabbix_token', _('Create and verify token'), $worker_ready))),
-    (new CTag('h4', true, _('Use an existing token')))->addClass('input-section-header'),
-    $form('api')->addItem($api)->addItem(makeFormFooter(
-        $submit('set_zabbix', $api_ready ? _('Verify and replace token') : _('Verify and use token'), $worker_ready))),
-    (new CTag('h4', true, _('Token management')))->addClass('input-section-header'),
-    $form('clear-api')->addItem(makeFormFooter(
-        $submit('clear_zabbix', _('Remove stored API token'), $worker_ready && $api_ready, true),
-        [new CLink(_('Manage / revoke API tokens'), (new CUrl('zabbix.php'))->setArgument('action', 'token.list'))])),
-    (new CFormGrid())->addItem($note(_('Removing or replacing the stored token does not revoke it in Zabbix. Revoke unused GitKeeper tokens in the native API token page.')))
-];
+$row($repository_grid, _('Repository privato e branch'), $selector, 'gitkeeper-repository-focus');
+$row($repository_grid, _('Destinazione confermata'), $span('destination', $status['repository']['full_name'] ?? $ui['none']));
+$create = new CFormGrid();
+$row($create, _('Proprietario (account o organizzazione)'), (new CTextBox('repository_owner', $status['account'] ?? ''))
+    ->setAttribute('maxlength', 100), 'repository_owner');
+$row($create, _('Nome repository'), (new CTextBox('repository_name'))->setAttribute('maxlength', 100), 'repository_name');
+$steps[] = $step(3, _('Repository di destinazione'),
+    _('Installa l’App sull’account proprietario e concedile accesso al repository privato. Se è disponibile un solo repository, conferma comunque la scelta.'), [
+        $form('repository')->addItem($repository_grid)->addItem(makeFormFooter(
+            $submit('select_repository', _('Usa repository'), $worker_ready && $github_ready && (bool) $repos),
+            [$submit('repositories', _('Aggiorna elenco'), $worker_ready && $github_ready, true)])),
+        $paragraph(_('Cambiare destinazione sospende la pianificazione fino a Salva e sincronizza. Il branch usato è quello predefinito del repository.')),
+        new CTag('details', true, [new CTag('summary', true, _('Crea nuovo repository')),
+            $paragraph(_('La creazione è sempre privata. Richiede Repository creation: write e il permesso di creare repository per il proprietario scelto.')),
+            $form('create-repository')->addItem($create)->addItem(makeFormFooter(
+                $submit('create_repository', _('Crea e seleziona repository privato'), $worker_ready && $github_ready))),
+            $paragraph(_('Se GitHub ha creato il repository ma manca l’accesso dell’App, concedilo e aggiorna l’elenco: non ricreare il repository. Se la creazione diretta non è consentita, crea su GitHub e concedi accesso all’App.')),
+            new CLink(_('Crea su GitHub'), 'https://github.com/new')])
+    ]);
 
 $configuration = new CFormGrid();
-$row($configuration, _('Repository'), $selected_repository
-    ? new CLink($selected_repository['full_name'], 'https://github.com/'.$selected_repository['full_name'])
-    : _('Choose or create a repository in the GitHub tab first.'));
 $checks = [];
 foreach ($labels as $category => $label) {
     $checks[] = new CDiv((new CCheckBox('categories[]', $category))->setId('gitkeeper-category-'.$category)
         ->setLabel($label)->setChecked(in_array($category, $settings['categories'] ?? $available, true))
         ->setEnabled(in_array($category, $available, true)));
 }
-$row($configuration, _('Configuration to export'), $checks);
+$row($configuration, _('Categorie'), $checks);
+$saved_interval = $settings['interval'] ?? Queue::DEFAULT_INTERVAL;
+$custom_interval = !in_array($saved_interval, Queue::INTERVALS, true);
 $interval = (new CSelect('interval'))->setId('gitkeeper-interval')->setFocusableElementId('gitkeeper-interval-focus')
-    ->setValue($settings['interval'] ?? 15);
+    ->setValue($custom_interval ? 0 : $saved_interval);
 foreach (Queue::INTERVALS as $minutes) {
-    $interval->addOption(new CSelectOption($minutes, $minutes === 1440 ? _('24 hours') : $minutes.' '._('minutes')));
+    $interval->addOption(new CSelectOption($minutes, $minutes === 4320 ? $ui['three_days']
+        : ($minutes === 1440 ? _('24 ore') : $minutes.' '._('minuti'))));
 }
-$row($configuration, _('Export interval'), $interval, 'gitkeeper-interval-focus');
-$configuration->addItem($note(_('Saved settings are reused. On first setup, all categories supported by the worker are selected and the default interval is 15 minutes.')));
-$configuration->addItem($note(_('Save & Sync saves these settings and requests a snapshot. Subsequent snapshots follow the selected interval. Follow progress in Overview.')));
-if (!$worker_ready || !$github_ready || !$selected_repository || !$api_ready) {
-    $configuration->addItem($note($next_step));
+$interval->addOption(new CSelectOption(0, _('Personalizzato')));
+$row($configuration, _('Frequenza'), $interval, 'gitkeeper-interval-focus');
+$duration = new CFormGrid();
+foreach (['days' => [_('Giorni'), intdiv($saved_interval, 1440), intdiv(Queue::MAX_INTERVAL, 1440)],
+        'hours' => [_('Ore'), intdiv($saved_interval % 1440, 60), 23],
+        'minutes' => [_('Minuti'), $saved_interval % 60, 59]] as $unit => [$label, $value, $max]) {
+    $id = 'gitkeeper-interval-'.$unit;
+    $row($duration, $label, (new CTextBox('interval_'.$unit, $value))->setId($id)
+        ->setAttribute('type', 'number')->setAttribute('min', 0)->setAttribute('max', $max)
+        ->setAttribute('step', 1)->setAttribute('required', true)->setEnabled($custom_interval)
+        ->setWidth(ZBX_TEXTAREA_SMALL_WIDTH), $id);
 }
-$save_ready = $worker_ready && $api_ready && $github_ready && $selected_repository !== null;
-$configuration_feedback = (new CSpan($synchronization['message']))->setId('gitkeeper-configuration-feedback')
-    ->setAttribute('role', 'status')->setAttribute('aria-live', 'polite')
-    ->setAttribute('data-submitting', _('Submitting settings and snapshot request...'));
-$configuration_body = $form('configuration')->addItem((new CVar('repository_id', $settings['repository_id'] ?? 0))->removeId())
-    ->addItem($configuration)->addItem(makeFormFooter(
-    $submit('save', _('Save & Sync'), $save_ready && !$sync_busy)
-        ->setAttribute('data-prerequisites-ready', $save_ready ? '1' : '0')
-        ->setAttribute('aria-describedby', 'gitkeeper-configuration-feedback')
-))->addItem($configuration_feedback);
+$custom_field = (new CFormField([$duration, $paragraph(_('Intervallo minimo: un minuto.'))]))
+    ->setId('gitkeeper-custom-interval')->addClass(CFormField::ZBX_STYLE_FORM_FIELD_OFFSET_1);
+if (!$custom_interval) { $custom_field->setAttribute('hidden', 'hidden'); }
+$configuration->addItem($custom_field);
+$configuration_form = $form('configuration')->addItem(
+    new CVar('repository_id', $settings['repository_id'] ?? 0, 'gitkeeper-saved-repository'))
+    ->addItem($configuration)->addItem($paragraph(_('Sono versionati i dati leggibili secondo la policy corrente sui dati riservati; consulta i campi esclusi. Il ripristino completo dell’istanza e il disaster recovery non sono disponibili.')))
+    ->addItem(makeFormFooter($submit('save', _('Salva e sincronizza'), $sync['can_save'])));
+$steps[] = $step(4, _('Cosa sincronizzare'), _('Salva categorie e frequenza e avvia uno snapshot. Le esecuzioni successive seguono la frequenza scelta.'), $configuration_form);
 
-(new CHtmlPage())->setTitle(_('GitKeeper'))->addItem(
-    (new CTabView(['id' => 'gitkeeper-tabs']))
-        ->addTab('gitkeeper-tab-overview', _('Overview'), $overview_body)
-        ->addTab('gitkeeper-tab-github', _('GitHub'), $github_body)
-        ->addTab('gitkeeper-tab-api', _('Zabbix API'), $api_body)
-        ->addTab('gitkeeper-tab-configuration', _('Configuration'), $configuration_body)
-)->show();
+$summary = new CFormGrid();
+$row($summary, _('Ultima sincronizzazione'), $span('synchronization', $sync['label'])->setAttribute('role', 'status'));
+$row($summary, _('Ultimo snapshot riuscito'), $span('last-success', $time($status['last_success'] ?? null)));
+$row($summary, _('Prossima esecuzione'), $span('next-sync', isset($settings['next_sync']) ? $time($settings['next_sync']) : $ui['paused']));
+$row($summary, _('Repository e branch'), $span('summary-repository', isset($status['repository'])
+    ? $status['repository']['full_name'].' ('.$status['repository']['default_branch'].')' : $ui['none']));
+$row($summary, _('Frequenza'), $span('frequency', isset($settings['interval']) ? $frequency($settings['interval']) : '—'));
+$repo_name = $status['repository']['full_name'] ?? '';
+$row($summary, _('Ultimo commit'), (new CLink(isset($status['last_commit']) ? substr($status['last_commit'], 0, 12) : '—',
+    !empty($status['last_commit']) && $repo_name ? 'https://github.com/'.$repo_name.'/commit/'.$status['last_commit'] : '#'))->setId('gitkeeper-commit'));
+$table = (new CTableInfo())->setId('gitkeeper-category-results')->setHeader(
+    [_('Categoria'), _('Stato'), _('Oggetti'), _('Host/template elaborati'), _('Campi esclusi')]);
+foreach ($labels as $category => $label) {
+    $result = $status['categories'][$category] ?? [];
+    $table->addRow((new CRow([$label, $span('category-state-'.$category, $ui['category_states'][$result['state'] ?? ''] ?? '—'),
+        $span('category-objects-'.$category, $result['objects'] ?? '—'),
+        $span('category-progress-'.$category, isset($result['total']) ? ($result['processed'] ?? 0).' / '.$result['total'] : '—'),
+        $span('category-excluded-'.$category, count($result['excluded_fields'] ?? []))]))->setId('gitkeeper-category-row-'.$category));
+}
+$excluded = new CTag('details', true, [new CTag('summary', true, _('Dettaglio campi esclusi')),
+    (new CTag('pre', true, json_encode(array_map(static fn($r) => $r['excluded_fields'] ?? [], $status['categories'] ?? []),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)))->setId('gitkeeper-excluded')]);
+$wizard = (new CDiv($setup['operational'] ? [] : $steps))->setId('gitkeeper-wizard');
+if ($setup['operational']) { $wizard->setAttribute('hidden', 'hidden'); }
+$operational = (new CDiv([$summary]))->setId('gitkeeper-operational');
+if (!$setup['operational']) { $operational->setAttribute('hidden', 'hidden'); }
+$overview = [
+    $paragraph(_('Versiona la configurazione Zabbix in un repository GitHub privato.')),
+    $form('sync')->addItem(makeFormFooter($submit('sync', _('Sincronizza ora'), $sync['ready']
+        && !in_array($sync['state'], ['Queued', 'Saving', 'Running', 'Publishing'], true)))),
+    $span('sync-feedback', $sync['message'])->setAttribute('role', 'status')->setAttribute('aria-live', 'polite'),
+    (new CList())->setId('gitkeeper-sync-requirements'), $span('worker-warning')->setAttribute('role', 'status'),
+    $wizard, $operational, $paragraph(_('Le categorie elaborate diventano uno snapshot soltanto dopo la pubblicazione riuscita.')), $table, $excluded
+];
+$connections = (new CDiv($setup['operational'] ? array_slice($steps, 0, 4) : []))->setId('gitkeeper-settings-connections');
+$sync_settings = (new CDiv($setup['operational'] ? $steps[4] : []))->setId('gitkeeper-settings-sync');
+$advanced = [
+    new CLink(_('Gestisci / revoca token API Zabbix'), (new CUrl('zabbix.php'))->setArgument('action', 'token.list')),
+    new CTag('p', true, new CLink(_('Revoca autorizzazioni GitHub'), 'https://github.com/settings/apps/authorizations')),
+    $form('remove')->addItem(makeFormFooter($submit('clear_zabbix', _('Rimuovi token locale Zabbix'), $api_ready, true,
+        _('Rimuovere il token locale? La pianificazione sarà sospesa. Il token rimane valido su Zabbix: revocalo separatamente nella gestione token.')),
+        [$submit('disconnect', _('Disconnetti GitHub'), $worker_ready, true,
+            _('Eliminare i token GitHub locali e sospendere la pianificazione? App, repository e commit rimangono su GitHub. La revoca dell’autorizzazione si effettua separatamente su GitHub.'))])),
+    new CLink(_('Diagnostica del worker'), 'https://github.com/Capobuf/Zabbix-GitKeeper/blob/main/docs/installation.md#diagnose-failures-and-uninstall')
+];
+$settings_body = [
+    (new CDiv(new CLink(_('Completa la configurazione in Panoramica'), '#gitkeeper-tab-overview')))->setId('gitkeeper-setup-link'),
+    (new CFormGrid())->addClass('gitkeeper-sections')->addItem([
+        new CFormFieldset(_('Sincronizzazione'), new CFormField($sync_settings)),
+        new CFormFieldset(_('Connessioni'), new CFormField($connections)),
+        new CFormFieldsetCollapsible(_('Avanzate e gestione credenziali'), new CFormField([
+            (new CDiv())->setId('gitkeeper-settings-app'), $advanced]))])
+];
+$error = $sync['error'] ?? $status['error'] ?? '';
+$logo_variant = in_array(getUserTheme(CWebUser::$data), ['dark-theme', 'hc-dark'], true) ? 'white' : 'black';
+$brand = (new CDiv(new CImg($this->getAssetsPath().'/img/logo-'.$logo_variant.'.svg', _('Zabbix GitKeeper'))))
+    ->addClass('gitkeeper-brand');
+$root = (new CDiv([
+    $brand,
+    (new CDiv($error))->setId('gitkeeper-error')->addClass(ZBX_STYLE_RED)->setAttribute('role', 'alert'),
+    $span('operation-feedback')->setAttribute('role', 'status')->setAttribute('aria-live', 'polite'),
+    $span('copy-result')->setAttribute('role', 'status'),
+    (new CTabView(['id' => 'gitkeeper-tabs']))->addTab('gitkeeper-tab-overview', _('Panoramica'), $overview)
+        ->addTab('gitkeeper-tab-settings', _('Impostazioni'), $settings_body)
+]))->setId('gitkeeper')->setAttribute('data-status', json_encode($status))
+    ->setAttribute('data-ui', json_encode($ui))->setAttribute('data-request-id', $data['request_id'] ?? '')
+    ->setAttribute('data-api-request', $data['api_request'] ?? '')->setAttribute('data-sync-request', $data['sync_request'] ?? '')
+    ->setAttribute('data-operation', $data['request_operation'] ?? '');
+(new CHtmlPage())->setTitle(_('GitKeeper'))->addItem($root)->show();

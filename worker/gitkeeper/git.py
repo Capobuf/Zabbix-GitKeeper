@@ -65,7 +65,7 @@ class Publisher:
                     manifest = read_json(managed / "manifest.json")
                     expected = set(manifest.get("checksums", {})) | {"manifest.json"}
                     actual = {p.relative_to(managed).as_posix() for p in managed.rglob("*") if p.is_file()}
-                    if manifest.get("schema") != 1 or not manifest.get("gitkeeper_version") or expected != actual:
+                    if manifest.get("schema") not in (1, 2) or not manifest.get("gitkeeper_version") or expected != actual:
                         raise Error("Destination managed area contains foreign files; no files removed.")
                     shutil.rmtree(managed)
                 shutil.copytree(stage, managed)

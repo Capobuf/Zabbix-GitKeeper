@@ -16,7 +16,7 @@ from zabbix_utils import APIRequestError, ProcessingError
 from gitkeeper.exporter import Exporter, Incomplete
 from gitkeeper.git import Publisher
 from gitkeeper.github import GitHub, Reconnect, request as github_request
-from gitkeeper.policy import OMITTED, UNREADABLE, encode, sanitize
+from gitkeeper.policy import UNREADABLE, encode, sanitize
 from gitkeeper.storage import Error, Transient, api_url, atomic_json, command, process_lock, read_json, settings
 from gitkeeper.worker import Worker
 
@@ -68,9 +68,12 @@ class FakeAPI:
                             "opcommand_grp": [{"opcommand_grpid": "2", "groupid": "3"}]}],
             "recovery_operations": [], "update_operations": []}])
         self.mediatype = Collection([{"mediatypeid": "6", "name": "Mail", "type": "0", "status": "0",
+            "smtp_server": "smtp.example.test", "username": "mailer", "passwd": SENTINEL,
+            "script": "return value;", "parameters": [{"name": "token", "value": SENTINEL}],
             "message_templates": [{"eventsource": "0", "recovery": "0", "subject": SENTINEL, "message": SENTINEL}]}])
         self.user = Collection([{"userid": "7", "username": "Admin", "roleid": "3", "usrgrps": [{"usrgrpid": "8"}],
-                                 "medias": [{"mediatypeid": "6", "active": "0", "severity": "63", "period": "1-7,00:00-24:00"}]}])
+                                 "medias": [{"mediatypeid": "6", "active": "0", "severity": "63", "period": "1-7,00:00-24:00",
+                                             "sendto": ["admin@example.test"]}]}])
         self.usergroup = Collection([{"usrgrpid": "8", "name": "Admins", "hostgroup_rights": [{"id": "3", "permission": "3"}],
                                       "templategroup_rights": [], "tag_filters": []}])
         self.role = Collection([{"roleid": "3", "name": "Super admin", "type": "3", "readonly": "1",
@@ -95,7 +98,9 @@ class FakeAPI:
         if self.reverse:
             items.reverse()
         obj = {"host" if family == "hosts" else "template": host, "name": host, "items": items,
-               "macros": [{"macro": "{$SECRET}", "type": "SECRET_TEXT", "value": SENTINEL}],
+               "macros": [{"macro": "{$SECRET}", "type": "SECRET_TEXT"},
+                          {"macro": "{$TEXT}", "value": SENTINEL},
+                          {"macro": "{$VAULT}", "type": "VAULT", "value": "secret/zabbix:password"}],
                "interfaces": [{"interface_ref": "if1", "type": "SNMP", "details": {"community": SENTINEL}}],
                "httptests": [{"http_password": SENTINEL}], "inventory": {"notes": SENTINEL},
                "discovery_rules": [{"name": "Discovery", "key": SENTINEL, "item_prototypes": [],
@@ -108,9 +113,12 @@ class FakeAPI:
 
 class CoreTests(unittest.TestCase):
     def test_configuration_and_queue_whitelist(self):
-        valid = {"repository_id": 10, "categories": ["hosts"], "interval": 15}
+        valid = {"repository_id": 10, "categories": ["hosts"], "interval": 4320}
         self.assertEqual(settings(valid), valid)
-        for change in ({"interval": True}, {"interval": 7}, {"categories": ["restore"]},
+        for minutes in (1, 7, 1507, 2147483647):
+            self.assertEqual(settings({**valid, "interval": minutes})["interval"], minutes)
+        for change in ({"interval": True}, {"interval": 0}, {"interval": -1}, {"interval": 2147483648},
+                       {"interval": 1.5}, {"interval": "7"}, {"categories": ["restore"]},
                        {"categories": []}, {"repository_id": -1}, {"shell": "echo bad"}):
             with self.assertRaises(Error):
                 settings({**valid, **change})
@@ -125,7 +133,7 @@ class CoreTests(unittest.TestCase):
             command({"id": "a" * 32, "operation": "set_github_app",
                      "params": {"client_id": "fixture", "client_secret": SENTINEL}})
 
-    def test_determinism_secrets_and_version_fixtures(self):
+    def test_determinism_readable_configuration_and_version_fixtures(self):
         for version in ("7.0.0", "7.4.0"):
             api = FakeAPI(version)
             with tempfile.TemporaryDirectory() as directory:
@@ -137,17 +145,52 @@ class CoreTests(unittest.TestCase):
                 second = {p.relative_to(b): p.read_bytes() for p in b.rglob("*.json")}
                 self.assertEqual(first, second)
                 text = b"".join(first.values()).decode()
-                self.assertNotIn(SENTINEL, text)
+                self.assertIn(SENTINEL, text)
+                self.assertNotIn("<omitted: potentially sensitive>", text)
                 self.assertIn(UNREADABLE, text)
+                host = read_json(a / "hosts" / "1.json")["hosts"][0]
+                self.assertNotIn("date", read_json(a / "hosts" / "1.json"))
+                item = next(i for i in host["items"] if i["name"] == "CPU")
+                self.assertEqual(item["key"], SENTINEL)
+                self.assertEqual(item["password"], SENTINEL)
+                self.assertEqual(item["triggers"][0]["expression"], SENTINEL)
+                self.assertEqual(item["preprocessing"][0]["parameters"], [SENTINEL])
+                self.assertEqual(host["inventory"], {"notes": SENTINEL})
+                self.assertEqual(host["httptests"], [{"http_password": SENTINEL}])
+                self.assertEqual(host["interfaces"][0]["details"]["community"], SENTINEL)
+                self.assertEqual(next(m for m in host["macros"] if m["macro"] == "{$VAULT}")["value"],
+                                 "secret/zabbix:password")
+                media = read_json(a / "media_types" / "mediatype" / "6.json")
+                self.assertEqual(media["passwd"], SENTINEL)
+                self.assertEqual(media["parameters"], [{"name": "token", "value": SENTINEL}])
+                self.assertEqual(media["message_templates"][0]["message"], SENTINEL)
+                self.assertEqual(read_json(a / "users" / "user" / "7.json")["medias"][0]["sendto"],
+                                 ["admin@example.test"])
+                self.assertIn("/hosts[]/macros[]/value", coverage["hosts"]["excluded_fields"])
+                self.assertEqual(coverage["media_types"]["excluded_fields"], [])
                 self.assertGreater(coverage["hosts"]["objects"], 1)
                 self.assertIn("selectRecoveryOperations", api.action.calls[1])
+                self.assertIn("sendto", api.user.calls[1]["selectMedias"])
 
     def test_unknown_field_fails_closed_without_echoing_values(self):
         with self.assertRaises(Error) as raised:
             sanitize({"name": "Safe", "unknown": SENTINEL}, "host", set())
         self.assertNotIn(SENTINEL, str(raised.exception))
         self.assertEqual(sanitize({"script": SENTINEL, "parameters": [SENTINEL]}, "media", set()),
-                         {"script": OMITTED, "parameters": OMITTED})
+                         {"script": SENTINEL, "parameters": [SENTINEL]})
+
+    def test_macro_values_are_preserved_unless_unavailable(self):
+        for macro_type in ("1", "SECRET_TEXT"):
+            for value in ({}, {"value": ""}):
+                excluded = set()
+                result = sanitize({"macro": "{$SECRET}", "type": macro_type, **value}, "macro", excluded)
+                self.assertEqual(result["value"], UNREADABLE)
+                self.assertEqual(excluded, {"/value"})
+            excluded = set()
+            result = sanitize({"type": macro_type, "value": SENTINEL}, "macro", excluded)
+            self.assertEqual(result["value"], SENTINEL)
+            self.assertEqual(excluded, set())
+        self.assertEqual(sanitize({"value": ""}, "macro", set()), {"value": ""})
 
     def test_ordered_preprocessing_is_not_sorted(self):
         data = [{"type": "MULTIPLIER"}, {"type": "RTRIM"}]
@@ -182,8 +225,8 @@ class CoreTests(unittest.TestCase):
                               '{$INTERVAL: "a\\"' + SENTINEL + '"}', '{$INTERVAL: "{#ID}"}'):
                     with self.subTest(context=context, field=field, macro=macro):
                         excluded = set()
-                        self.assertEqual(sanitize({field: macro}, context, excluded), {field: OMITTED})
-                        self.assertEqual(excluded, {"/" + field})
+                        self.assertEqual(sanitize({field: macro}, context, excluded), {field: macro})
+                        self.assertEqual(excluded, set())
         for data in ({"status": "0;1"}, {"delay": '1m;"' + SENTINEL + '"'},
                      {"timeout": {"value": SENTINEL}}):
             with self.assertRaises(Error) as result:
@@ -218,7 +261,7 @@ class CoreTests(unittest.TestCase):
                         data = read_json(stage / family / f"{object_id}.json")
                         prototype = data[family][0]["discovery_rules"][0]["host_prototypes"][0]
                         self.assertEqual(prototype["group_links"], [{"group": {"name": "Discovered hosts"}}])
-                        self.assertNotIn(SENTINEL, encode(data))
+                        self.assertEqual(prototype["macros"][0]["value"], SENTINEL)
                 unexpected = True
                 with tempfile.TemporaryDirectory() as directory:
                     stage = Path(directory)
@@ -285,7 +328,7 @@ class CoreTests(unittest.TestCase):
         exporter.verify_native("1", obj, {})
         self.assertEqual(api.discoveryrule.calls[0]["filter"], {"flags": 1})
         self.assertEqual(api.discoveryruleprototype.calls[0]["filter"], {"flags": 3})
-        self.assertNotIn(SENTINEL, encode(sanitize(prototype, "discovery", set())))
+        self.assertEqual(sanitize(prototype, "discovery", set())["parent_discovery_rule"], {"key": SENTINEL})
         obj["discovery_rules"].pop()
         with self.assertRaises(Incomplete):
             exporter.verify_native("1", obj, {})
@@ -460,6 +503,10 @@ class GitTests(unittest.TestCase):
         exporter = Exporter({}, api)
         first_stage = self.root / "first"
         exporter.export(["hosts", "templates", "actions"], first_stage)
+        # Existing schema-1 repositories must remain publishable after the policy upgrade.
+        manifest = read_json(first_stage / "manifest.json")
+        manifest["schema"] = 1
+        Exporter.write(first_stage / "manifest.json", manifest)
         first, changed = self.publisher.publish(first_stage)
         self.assertTrue(changed)
         same, changed = self.publisher.publish(first_stage)
@@ -476,6 +523,15 @@ class GitTests(unittest.TestCase):
         for category in ("hosts", "templates", "actions"):
             self.assertIn("gitkeeper/" + category, diff)
         self.assertIn("preserve me", self.git("show", "main:README.md", cwd=self.remote))
+
+        # Changing only a previously omitted message must also produce a real Git diff.
+        api.action.rows[0]["operations"][0]["opmessage"]["message"] = "Updated notification body"
+        third_stage = self.root / "third"
+        exporter.export(["hosts", "templates", "actions"], third_stage)
+        third, changed = self.publisher.publish(third_stage)
+        self.assertTrue(changed)
+        diff = self.git("diff", second, third, "--", "gitkeeper/actions/action/5.json", cwd=self.remote)
+        self.assertIn("+        \"message\": \"Updated notification body\"", diff)
 
     def test_export_error_preserves_last_snapshot(self):
         api = FakeAPI()
@@ -813,6 +869,79 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(status["last_request"], request_id)
         self.assertNotIn(SENTINEL, self.worker.public.read_text())
         self.assertEqual(list((self.root / "queue").iterdir()), [])
+
+    def test_current_and_finished_requests_survive_queue_claim(self):
+        request_id = "d" * 32
+        atomic_json(self.root / "queue" / (request_id + ".json"), {
+            "id": request_id, "operation": "repositories", "params": {}})
+
+        def inspect_request(request):
+            public = read_json(self.worker.public)
+            self.assertEqual(public["current_request"], {"id": request_id, "operation": "repositories"})
+            self.assertFalse((self.root / "queue" / (request_id + ".json")).exists())
+            self.assertNotIn("params", public["current_request"])
+
+        with patch.object(self.worker, "execute", side_effect=inspect_request):
+            self.worker.drain()
+        public = read_json(self.worker.public)
+        self.assertIsNone(public["current_request"])
+        self.assertEqual(public["last_result"]["id"], request_id)
+        self.assertEqual(public["last_result"]["state"], "Completed")
+
+    def test_failed_sync_remains_after_successful_connection_check_and_restart(self):
+        self.worker.config = {"sync_request_id": "e" * 32}
+        self.worker.status.update(operation="sync", state="Failed", error="Policy failure", last_success=123)
+        self.worker.sync_result("Failed")
+        self.worker.github.api = Mock(return_value={"login": "fixture"})
+        self.worker.github.repositories = Mock(return_value=[])
+        self.worker.execute(command({"id": "f" * 32, "operation": "test_github", "params": {}}))
+        restarted = Worker(self.install)
+        self.assertEqual(restarted.status["last_sync"]["error"], "Policy failure")
+        self.assertEqual(restarted.status["last_sync"]["id"], "e" * 32)
+        self.assertEqual(restarted.status["last_success"], 123)
+        self.assertIsNone(restarted.status["error"])
+
+    @patch("gitkeeper.worker.process_lock")
+    def test_scheduled_snapshot_does_not_reuse_manual_request_id(self, lock):
+        lock.return_value.__enter__.return_value = True
+        atomic_json(self.worker.config_path, {"next_sync": 0, "sync_pending": False,
+                                              "sync_request_id": "a" * 32})
+        atomic_json(self.worker.github.path, {"token": "fixture"})
+        self.worker.github.poll = Mock(return_value=None)
+        self.worker.github.token = Mock(return_value="fixture")
+        with patch.object(self.worker, "sync") as sync:
+            self.worker.tick()
+        sync.assert_called_once()
+        self.assertNotIn("sync_request_id", read_json(self.worker.config_path))
+
+    @patch("gitkeeper.worker.Exporter")
+    @patch("gitkeeper.worker.Publisher")
+    def test_publishing_precedes_completed_outcome_and_retains_unchanged_commit(self, publisher, exporter):
+        self.worker.config = {"repository_id": 42, "categories": ["hosts"], "interval": 1507,
+                              "sync_request_id": "a" * 32}
+        self.worker.status["last_result"] = {"id": "a" * 32, "operation": "sync", "state": "Queued"}
+        atomic_json(self.root / "private/zabbix.json", {"token": TOKEN})
+        self.worker.github.repository = Mock(return_value={"id": 42, "private": True})
+        self.worker.github.token = Mock(return_value="ghu_fixture")
+        exporter.return_value.export.return_value = {"hosts": {"state": "exported", "objects": 1}}
+
+        def publish(stage):
+            public = read_json(self.worker.public)
+            self.assertEqual(public["state"], "Running")
+            self.assertEqual(public["sync_phase"], "Publishing")
+            self.assertNotIn("last_success", public)
+            self.assertEqual(public["current_request"]["id"], "a" * 32)
+            return "a" * 40, False
+
+        publisher.return_value.publish.side_effect = publish
+        self.worker.sync()
+        public = read_json(self.worker.public)
+        self.assertEqual(public["last_sync"]["state"], "Completed")
+        self.assertEqual(public["last_result"]["state"], "Completed")
+        self.assertFalse(public["last_sync"]["changed"])
+        self.assertEqual(public["last_commit"], "a" * 40)
+        self.assertEqual(self.worker.config["next_sync"] - public["last_success"], 1507 * 60)
+        self.assertNotIn(TOKEN, self.worker.public.read_text())
 
 
 if __name__ == "__main__":

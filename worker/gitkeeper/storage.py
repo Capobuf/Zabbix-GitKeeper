@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 CATEGORIES = ("hosts", "templates", "actions", "media_types", "users")
-INTERVALS = (5, 15, 30, 60, 1440)
+MAX_INTERVAL = 2147483647  # Matches the frontend's native int32 input, in minutes.
 
 
 class Error(Exception):
@@ -73,7 +73,7 @@ def settings(value: dict) -> dict:
         raise Error("Invalid settings fields.")
     if type(value["repository_id"]) is not int or value["repository_id"] <= 0:
         raise Error("Select an authorized private repository.")
-    if type(value["interval"]) is not int or value["interval"] not in INTERVALS:
+    if type(value["interval"]) is not int or not 1 <= value["interval"] <= MAX_INTERVAL:
         raise Error("Invalid export interval.")
     cats = value["categories"]
     if (not isinstance(cats, list) or not cats or any(c not in CATEGORIES for c in cats)
