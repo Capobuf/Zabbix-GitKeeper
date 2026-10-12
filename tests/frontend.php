@@ -188,6 +188,11 @@ try {
     ensure(CMessageHelper::$success !== '', 'Successful token setup had no notification');
     $requests = glob($root.'/queue/*.json');
     ensure(count($requests) === 1, 'Native token was not queued');
+    // Only the test fixture changes mode to inspect the handoff; production PHP cannot read it.
+    if (PHP_OS_FAMILY !== 'Windows') {
+        ensure((fileperms($requests[0]) & 0777) === 0240, 'Generated token queue mode is insecure');
+    }
+    chmod($requests[0], 0600);
     $request = json_decode(file_get_contents($requests[0]), true);
     ensure($request['operation'] === 'set_zabbix' && $request['params']['token'] === str_repeat('a', 64), 'Incorrect generated-token handoff');
     ensure($request['params']['url'] === 'http://127.0.0.1/zabbix/api_jsonrpc.php', 'HTTP loopback URL was not preserved');
@@ -198,6 +203,7 @@ try {
         'api_token' => ' '.str_repeat('b', 64).' ', 'tls_skip_verify' => 1];
     $action->invoke($controller);
     $requests = glob($root.'/queue/*.json');
+    chmod($requests[0], 0600);
     $request = json_decode(file_get_contents($requests[0]), true);
     ensure($request['params']['verify_tls'] === false && $request['params']['token'] === str_repeat('b', 64), 'Existing token/TLS option not submitted');
     unlink($requests[0]);
