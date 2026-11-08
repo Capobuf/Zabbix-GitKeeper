@@ -9,6 +9,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from .errors import failure_message, log_failure
 from .exporter import Exporter, Incomplete
 from .git import Publisher
 from .github import GitHub, Reconnect
@@ -45,9 +46,8 @@ class Worker:
         atomic_json(self.public, self.status, 0o640)
 
     def failure(self, exc: Exception) -> None:
-        # Exception strings from libraries/API responses are intentionally discarded.
-        self.status["error"] = str(exc) if isinstance(exc, Error) else (
-            "Operation failed. Check Zabbix API permissions, policy coverage and local filesystem access.")
+        log_failure(exc)
+        self.status["error"] = failure_message(exc)
         self.status["state"] = "Partial / Incomplete" if isinstance(exc, Incomplete) else "Failed"
         if isinstance(exc, Reconnect):
             self.github.disconnect()
@@ -76,6 +76,8 @@ class Worker:
 
         repo = self.github.repository(self.config["repository_id"])
         exporter = Exporter(read_json(self.private / "zabbix.json"))
+        exporter.check_permissions(self.config["categories"], self.config.get("template_scope"))
+        self.status["zabbix_version"] = exporter.version
         def progress(category, state, result):
             self.status["categories"][category] = {**result, "state": state}
             self.flush()
@@ -290,8 +292,9 @@ def main() -> None:
     os.umask(0o077)
     try:
         Worker(args.config).tick()
-    except Exception:
-        parser.exit(1, "GitKeeper could not read its installation/state files; check ownership and permissions.\n")
+    except Exception as exc:
+        log_failure(exc)
+        parser.exit(1, failure_message(exc) + "\n")
 
 
 if __name__ == "__main__":

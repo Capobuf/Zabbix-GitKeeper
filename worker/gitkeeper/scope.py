@@ -46,7 +46,7 @@ def relations(templates, hosts, prototypes, actions):
                 if not isinstance(operation, dict):
                     raise Incomplete("Malformed action operation.")
                 kind = operation.get("operationtype")
-                allowed = {str(i) for i in range(15)}  # Reviewed constants in both 7.0 and 7.4.
+                allowed = {str(i) for i in range(15)}  # Reviewed constants in 7.0, 7.4 and 8.0.
                 if str(kind) not in allowed or isinstance(kind, bool):
                     raise Incomplete("Unsupported action operation in template scope.")
                 if str(kind) in ("6", "7"):

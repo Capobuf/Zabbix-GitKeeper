@@ -7,10 +7,11 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from .errors import GitError
 from .storage import Error, Transient, atomic_json, read_json
 
 
-class Reconnect(Error):
+class Reconnect(GitError):
     pass
 
 
@@ -37,21 +38,21 @@ def request(url: str, method: str = "GET", data=None, token: str | None = None):
         with urllib.request.build_opener(NoRedirect).open(req, timeout=30) as response:
             raw = response.read(10_000_001)
         if len(raw) > 10_000_000:
-            raise Error("GitHub response exceeds safety limit.")
+            raise GitError("GitHub response exceeds safety limit.")
         return json.loads(raw)
     except urllib.error.HTTPError as exc:
         if url == 'https://github.com/login/device/code' and exc.code in (401, 404):
-            raise Error(f"GitHub refused device authorization (HTTP {exc.code}). "
+            raise GitError(f"GitHub refused device authorization (HTTP {exc.code}). "
                         "Check the App Client ID (not App ID) and enable Device Flow in the App settings.") from None
         if exc.code == 401:
             raise Reconnect("GitHub authorization expired or revoked. Reconnect GitHub.") from None
         if exc.code == 429 or exc.code >= 500:
             raise Transient("GitHub temporarily unavailable or rate limited; retry later.") from None
-        raise Error(f"GitHub rejected the request (HTTP {exc.code}). Check App access and permissions.") from None
+        raise GitError(f"GitHub rejected the request (HTTP {exc.code}). Check App access and permissions.") from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise Transient("Cannot reach GitHub; check connectivity and certificate trust.") from None
     except (ValueError, TypeError):
-        raise Error("Invalid GitHub response.") from None
+        raise GitError("Invalid GitHub response.") from None
 
 
 class GitHub:
@@ -63,13 +64,13 @@ class GitHub:
     def connect(self) -> dict:
         data = request("https://github.com/login/device/code", "POST", {"client_id": self.client_id})
         if data.get("error") == "device_flow_disabled":
-            raise Error("Enable Device Flow in your GitHub App settings before connecting.")
+            raise GitError("Enable Device Flow in your GitHub App settings before connecting.")
         if data.get("error") == "incorrect_client_credentials":
-            raise Error("GitHub rejected the Client ID. Copy the Client ID, not the App ID, from the App settings.")
+            raise GitError("GitHub rejected the Client ID. Copy the Client ID, not the App ID, from the App settings.")
         if not all(k in data for k in ("device_code", "user_code", "verification_uri", "expires_in", "interval")):
-            raise Error("GitHub App device flow is not configured.")
+            raise GitError("GitHub App device flow is not configured.")
         if data["verification_uri"] != "https://github.com/login/device":
-            raise Error("Unexpected GitHub verification URL.")
+            raise GitError("Unexpected GitHub verification URL.")
         data.update(expires_at=time.time() + int(data["expires_in"]), next_poll=0)
         atomic_json(self.device_path, data)
         return self.device_public(data)
@@ -171,13 +172,13 @@ class GitHub:
             data = self.api(f"{path}?per_page=100&page={page}")
             batch = data.get(key)
             if not isinstance(batch, list):
-                raise Error("Incomplete GitHub enumeration.")
+                raise GitError("Incomplete GitHub enumeration.")
             result.extend(batch)
             if len(batch) < 100:
                 if len(result) != data.get("total_count", len(result)):
-                    raise Error("GitHub repository list changed during enumeration; refresh it.")
+                    raise GitError("GitHub repository list changed during enumeration; refresh it.")
                 return result
-        raise Error("GitHub enumeration exceeds safety limit.")
+        raise GitError("GitHub enumeration exceeds safety limit.")
 
     def repositories(self) -> list:
         repos = {}
@@ -192,9 +193,9 @@ class GitHub:
     def repository(self, repo_id: int) -> dict:
         repo = next((r for r in self.repositories() if r["id"] == repo_id), None)
         if repo is None:
-            raise Error("Selected repository is public, unavailable, or lacks App/user Contents write access.")
+            raise GitError("Selected repository is public, unavailable, or lacks App/user Contents write access.")
         if repo["full_name"].lower() == "capobuf/zabbix-gitkeeper":
-            raise Error("The source repository cannot be used as a backup destination.")
+            raise GitError("The source repository cannot be used as a backup destination.")
         return repo
 
     def create_repository(self, name: str, owner: str | None = None) -> dict:
@@ -204,4 +205,4 @@ class GitHub:
         try:
             return self.repository(int(repo["id"]))
         except Error:
-            raise Error("Private repository created, but App access is missing. Grant access on GitHub and refresh.") from None
+            raise GitError("Private repository created, but App access is missing. Grant access on GitHub and refresh.") from None

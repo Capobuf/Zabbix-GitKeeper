@@ -6,7 +6,7 @@
 
 **Version, audit, and recover your Zabbix configuration using GitHub.**
 
-> **Project status: experimental implementation; partial live verification on Zabbix 7.4.15, full integration not yet verified.** The first iteration implements the PHP module, local worker, GitHub App Device Flow, private repository selection/creation, scheduled snapshots including readable credentials and status reporting. The specification below also describes future features. No Zabbix/Linux installation profile is certified and no restore/disaster recovery is implemented. See [installation](docs/installation.md), [coverage](docs/coverage.md), [architecture](docs/architecture.md) and [validation](docs/validation.md) for the actual scope and evidence.
+> **Project status: experimental implementation; supports Zabbix 7.0 LTS, 7.4 and 8.0 LTS. Live validation on 8.0.0 and earlier evidence on 7.4.15; see the validation record for exact limits.** The first iteration implements the PHP module, local worker, GitHub App Device Flow, private repository selection/creation, scheduled snapshots including readable credentials and status reporting. The specification below also describes future features. No Zabbix/Linux installation profile is certified and no restore/disaster recovery is implemented. See [installation](docs/installation.md), [coverage](docs/coverage.md), [architecture](docs/architecture.md) and [validation](docs/validation.md) for the actual scope and evidence.
 
 **GitHub App configuration:** [Setup guide for maintainers and Zabbix administrators](docs/github-app.md). Each installation registers its own GitHub App, saves its own Client ID and authorizes an account through Device Flow. There is no official/shared App. No alternative GitHub authentication method is planned.
 
@@ -157,7 +157,7 @@ Zabbix frontend (native PHP module)
 - **Communication:** small local, atomic, permission-controlled request/status files (or another equally simple, audited local IPC mechanism). The PHP web process must **not** run arbitrary shell commands or obtain database root credentials.
 - **State:** separate operational state from versioned data. The worker's credentials, locks and logs must remain outside the frontend document root and Git working tree.
 - **Zabbix API:** dedicated account/token with the smallest working Zabbix role. Some categories may need Super admin access; surface those privilege requirements explicitly rather than silently skipping them. Never store a Zabbix login password when a properly scoped API token is sufficient.
-- **Deployment:** initial support targets **Zabbix 7.0 LTS and 7.4**, on explicitly tested Linux package installations. MySQL/MariaDB and PostgreSQL are both target database engines for disaster recovery, subject to successful integration tests. The exact distribution/version matrix must be published after testing.
+- **Deployment:** reviewed support covers **Zabbix 7.0 LTS, 7.4 and 8.0 LTS**, on explicitly tested Linux package installations. MySQL/MariaDB and PostgreSQL are both target database engines for disaster recovery, subject to successful integration tests. The exact distribution/version matrix must be published after testing.
 - **Installer:** detect the actual Zabbix frontend directory, Python/database tool availability, permissions and cron implementation; install idempotently; provide upgrade/uninstall paths that preserve local state and do not modify Zabbix core. Exit with a clear error on unknown layouts.
 
 Suggested filesystem split:

@@ -2,55 +2,76 @@
 
 import hashlib
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
-from zabbix_utils import APIRequestError, ProcessingError, ZabbixAPI
+from zabbix_utils import APINotSupported, APIRequestError, ProcessingError, ZabbixAPI
 
 from . import __version__
+from .errors import APICompatibility, StructureError, UnsupportedVersion, api_error
 from .policy import PolicyError, encode, sanitize
 from .scope import Incomplete, object_id, public_summary, relations, resolve
 from .storage import Error, Transient, api_url, template_scope
 
 
+def reviewed_series(version):
+    if not re.fullmatch(r"(?:7\.0|7\.4|8\.0)\.[0-9]+", version):
+        raise UnsupportedVersion("Unsupported Zabbix version. Reviewed series: 7.0, 7.4 and 8.0 LTS; "
+                                 "use a stable patch release in one of these series.")
+    return ".".join(version.split(".")[:2])
+
+
 class Exporter:
     def __init__(self, credentials: dict, api=None):
         try:
+            # The pinned client predates 8.0. GitKeeper owns the stricter reviewed-series
+            # check below, before installing credentials or making authenticated calls.
             self.api = api or ZabbixAPI(url=api_url(credentials["url"]), timeout=30,
-                                       validate_certs=credentials.get("verify_tls", True))
-            self.version = str(self.api.apiinfo.version())
-            self.series = ".".join(self.version.split(".")[:2])
-            if self.series not in ("7.0", "7.4"):
-                raise Error("Zabbix version has no reviewed export policy. Targets are 7.0 and 7.4.")
+                                       validate_certs=credentials.get("verify_tls", True), skip_version_check=True)
+            self.version = str(self.call("apiinfo.version"))
+            self.series = reviewed_series(self.version)
             if api is None:
                 self.api.login(token=credentials["token"])
-            # Fail closed rather than treating permission-filtered enumeration as whole-instance.
-            self.api.authentication.get(output=["authentication_type"])
+            # This method requires Super admin in all reviewed series. Counts alone
+            # cannot detect permission-filtered visibility for a lower-privilege token.
+            probe = self.call("authentication.get", output=["authentication_type"])
+            if not isinstance(probe, dict) or "authentication_type" not in probe:
+                raise StructureError("Unrecognized authentication.get response; whole-instance visibility not verified.")
+        except APINotSupported:
+            raise UnsupportedVersion("The installed API client does not support this Zabbix version.") from None
         except ProcessingError:
             raise Transient("Cannot reach Zabbix API; check connectivity and certificate trust.") from None
-        except APIRequestError:
-            raise Error("Zabbix rejected API authentication or the Super admin probe; verify the token and role.") from None
+
+    def call(self, method, **params):
+        try:
+            family, operation = method.split(".")
+            return getattr(getattr(self.api, family), operation)(**params)
+        except APIRequestError as exc:
+            raise api_error(exc, method) from None
+        except APINotSupported:
+            raise APICompatibility(f"The installed API client cannot call {method} on this Zabbix version.") from None
+        except ProcessingError:
+            raise Transient(f"Cannot reach Zabbix API at {method}; check connectivity and certificate trust.") from None
 
     def check_permissions(self, categories: list[str], scope=None) -> None:
-        methods = {"hosts": ("host", "hostgroup", "item", "trigger", "discoveryrule", "itemprototype", "triggerprototype"),
-                   "templates": ("template", "templategroup", "item", "trigger", "discoveryrule", "itemprototype", "triggerprototype"),
+        methods = {"hosts": ("host", "hostgroup", "item", "trigger", "discoveryrule", "itemprototype", "triggerprototype", "hostprototype"),
+                   "templates": ("template", "templategroup", "item", "trigger", "discoveryrule", "itemprototype", "triggerprototype", "hostprototype"),
                    "actions": ("action",), "media_types": ("mediatype",), "users": ("user", "usergroup", "role")}
-        try:
-            for category in categories:
-                for method in methods[category]:
-                    getattr(self.api, method).get(countOutput=True)
-                if self.series == "7.4" and category in ("hosts", "templates"):
-                    self.api.discoveryruleprototype.get(countOutput=True)
-            if "templates" in categories and template_scope(scope)["mode"] == "used":
-                for method in ("host", "hostprototype", "action"):
-                    getattr(self.api, method).get(countOutput=True)
-        except APIRequestError:
-            raise Error("Zabbix denied a required read method. Check the token owner's API role permissions.") from None
-        except ProcessingError:
-            raise Transient("Cannot reach Zabbix API; check connectivity and certificate trust.") from None
+        required = {method for category in categories for method in methods[category]}
+        if self.series in ("7.4", "8.0") and set(categories) & {"hosts", "templates"}:
+            required.add("discoveryruleprototype")
+        if "templates" in categories and template_scope(scope)["mode"] == "used":
+            required.update(("host", "hostprototype", "action"))
+        for method in sorted(required):
+            self.call(method + ".get", countOutput=True)
+        if set(categories) & {"hosts", "templates"}:
+            # Empty explicit IDs export no objects, but exercise method authorization.
+            self.call("configuration.export", format="json", options={"hosts": []})
 
     def enumerate(self, method: str, id_field: str, **params) -> list:
-        get = getattr(self.api, method).get
+        def get(**options):
+            return self.call(method + ".get", **options)
         scope = {k: v for k, v in params.items() if k != "output" and not k.startswith("select")}
         def count():
             value = get(countOutput=True, **scope)
@@ -102,10 +123,8 @@ class Exporter:
                 metadata = {"mode": "all", "total": len(rows), "selected": len(rows), "excluded": 0,
                             "manual_included": 0, "missing_manual_templateids": []}
             return public_summary(metadata)
-        except APIRequestError:
-            raise Error("Zabbix denied template scope reads; check API permissions.") from None
-        except ProcessingError:
-            raise Transient("Cannot reach Zabbix while calculating template scope.") from None
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise StructureError("Unrecognized template scope API structure; snapshot stopped.") from None
 
     def verify_native(self, host_id: str, obj: dict, data: dict) -> None:
         scope = {"hostids": [host_id], "inherited": False}
@@ -113,7 +132,7 @@ class Exporter:
         # Native export includes configured LLD rules, not rules generated by nested discovery.
         discoveries = self.enumerate("discoveryrule", "itemid", output=["itemid", "key_"],
                                      filter={"flags": 1}, **scope)
-        if self.series == "7.4":
+        if self.series in ("7.4", "8.0"):
             discoveries += self.enumerate("discoveryruleprototype", "itemid", output=["itemid", "key_"],
                                           filter={"flags": 3}, **scope)
         for expected, exported in ((items, obj.get("items", [])), (discoveries, obj.get("discovery_rules", []))):
@@ -161,11 +180,13 @@ class Exporter:
             group_count += len(objects)
         # One native object per file gives stable names and bounded export batches.
         for processed, row in enumerate(rows, 1):
-            raw = self.api.configuration.export(format="json", options={family: [row[id_field]]})
+            raw = self.call("configuration.export", format="json", options={family: [row[id_field]]})
             try:
                 data = json.loads(raw)["zabbix_export"]
             except (ValueError, KeyError, TypeError):
-                raise Incomplete("Malformed native export response.") from None
+                raise StructureError("Malformed native export response; snapshot stopped.") from None
+            if not isinstance(data, dict) or data.get("version") != self.series:
+                raise StructureError("Native export schema version does not match the connected Zabbix series.")
             returned = data.get(family, [])
             if len(returned) != 1 or returned[0].get("host" if category == "hosts" else "template") != row["host"]:
                 raise Incomplete("Native export did not include the requested object.")
@@ -186,12 +207,7 @@ class Exporter:
                            "selectUpdateOperations": "extend"})]
         elif category == "media_types":
             collectors = [("mediatype", "mediatypeid", "media", {
-                "output": ["mediatypeid", "name", "type", "status", "smtp_port", "smtp_security",
-                           "smtp_verify_peer", "smtp_verify_host", "smtp_authentication", "maxsessions",
-                           "maxattempts", "attempt_interval", "message_format", "timeout", "process_tags",
-                           "show_event_menu", "provider", "smtp_server", "smtp_helo", "smtp_email",
-                           "exec_path", "gsm_modem", "username", "passwd", "script", "parameters",
-                           "event_menu_url", "event_menu_name", "description"], "selectMessageTemplates": "extend"})]
+                "output": "extend", "selectMessageTemplates": "extend"})]
         else:
             collectors = [
                 ("user", "userid", "user", {"output": ["userid", "username", "name", "surname", "roleid",
@@ -202,6 +218,11 @@ class Exporter:
                  "selectTemplateGroupRights": ["id", "permission"], "selectTagFilters": ["groupid", "tag", "value"]}),
                 ("role", "roleid", "role", {"output": ["roleid", "name", "type", "readonly"], "selectRules": "extend"})
             ]
+        if self.series == "8.0" and category == "users":
+            collectors[0][3]["output"].append("default_maintenance_period")
+            collectors[1][3]["output"] += ["proxy_mode", "proxy_group_mode"]
+            collectors[1][3].update(selectProxies=["proxyid"], selectProxyGroups=["proxy_groupid"],
+                                    selectApmFilters=["key", "value", "signal_type"])
         total = 0
         for method, id_field, context, params in collectors:
             rows = self.enumerate(method, id_field, **params)
@@ -252,7 +273,12 @@ class Exporter:
                     raise
                 if isinstance(exc, ProcessingError):
                     raise Transient(f"Zabbix transport failed while exporting {category}; retry later.") from None
-                raise Error(f"Zabbix export failed for {category}. Check API access and version policy.") from None
+                if isinstance(exc, (KeyError, TypeError, ValueError, AttributeError)):
+                    raise StructureError(f"Unrecognized API/export structure in {category}; snapshot stopped. "
+                                         "Check the worker journal and update the reviewed export policy.") from None
+                if isinstance(exc, OSError):
+                    raise
+                raise Error(f"Unexpected export failure in {category}; see the worker journal for the failure location.") from None
             if progress:
                 safe = dict(coverage[category])
                 if "template_scope" in safe:
@@ -262,17 +288,9 @@ class Exporter:
             try:
                 if graph != self.scope_graph():
                     raise Incomplete("Template inventory or relations changed during export; snapshot not published.")
-            except APIRequestError:
+            except Error as exc:
                 if progress:
-                    progress("templates", "Failed", {})
-                raise Error("Zabbix denied template scope verification; snapshot not published.") from None
-            except ProcessingError:
-                if progress:
-                    progress("templates", "Failed", {})
-                raise Transient("Cannot verify template scope before publication.") from None
-            except Incomplete:
-                if progress:
-                    progress("templates", "Incomplete", {})
+                    progress("templates", "Incomplete" if isinstance(exc, Incomplete) else "Failed", {})
                 raise
         checksums = {str(p.relative_to(stage)).replace("\\", "/"): hashlib.sha256(p.read_bytes()).hexdigest()
                      for p in sorted(stage.rglob("*.json"))}

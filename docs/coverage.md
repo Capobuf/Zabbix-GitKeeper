@@ -1,11 +1,12 @@
 # Configuration tracking coverage
 
-**Neither Zabbix 7.0 nor 7.4 is certified.** Read-only checks and complete collector execution with
-publication passed on Zabbix 7.4.15 under the earlier redaction policy. The readable-credentials policy
+**Reviewed series: 7.0 LTS, 7.4 and 8.0 LTS; no broad installation certification is claimed.**
+Zabbix **8.0.0** is the current live validation host; see the dated [validation record](validation.md).
+Read-only checks and complete collector execution with publication passed on Zabbix 7.4.15 under the earlier redaction policy. The readable-credentials policy
 also completed a live schema-1 to schema-2 migration and GitHub publication on 2026-10-12, with no legacy
-omission markers in the current snapshot. Synthetic regression fixtures cover both target series.
-Inventory/field coverage comparison and the complete fresh-configuration acceptance sequence remain
-unverified. See [validation](validation.md).
+omission markers in the current snapshot. Synthetic regression fixtures cover all three reviewed series.
+Optional structures without live examples remain fixture/source-reviewed; the complete fresh-configuration
+acceptance sequence remains unverified. See [validation](validation.md).
 
 Manifest schema 2 preserves readable configuration **including plaintext credentials** in the private
 repository. Schema 1 snapshots used broad redaction. GitKeeper no longer substitutes
@@ -18,7 +19,7 @@ managed snapshot; previous commits remain in Git history. No restore or full rec
 | Templates and template groups: `template.get`, `templategroup.get`, `configuration.export` | All templates in `all`; verified dependency closure in `used`. Native template configuration, vendor, links, README, macro configuration, dashboards, value-map mappings and monitoring; all template groups in both modes | Same native/API limitations as hosts; unrelated templates intentionally excluded in `used` | Inventory/decisive relations checked before/after; native checks apply to each selected template. No restore tool |
 | Items, triggers and LLD: native export plus `item.get`, `trigger.get`, `discoveryrule.get`, `itemprototype.get`, `triggerprototype.get` | Keys, expressions, dependencies, preprocessing parameters/scripts in execution order, credentials, HTTP payloads, discovery filters, paths, overrides, prototypes and graphs returned by native export | Properties absent from native export | Non-inherited normal items/triggers, configured LLD roots and item/trigger prototype identities checked. Graph/host prototypes not independently counted; same-count concurrent edits cannot be ruled out |
 | Actions: `action.get` and filter/operation selectors | Names, status, conditions and values, formulas, messages, escalation settings, recipients, script references and operation tags | Custom scripts referenced by ID are not independently collected | Counts/unique IDs checked; missing/unknown structures fail closed. IDs are instance-local; no restore |
-| Media types: `mediatype.get`, `selectMessageTemplates` | Transport settings, server/endpoint/sender fields, readable username/password, executable names, webhook scripts/parameters, menu settings, descriptions and notification texts | Executable file contents are not API configuration | Explicit output fields; counts/unique IDs checked. No restore |
+| Media types: `mediatype.get`, `selectMessageTemplates` | Transport settings, server/endpoint/sender fields, readable username/password, executable names, webhook scripts/parameters, menu settings, descriptions and notification texts | Executable file contents are not API configuration | Full media output, explicitly reviewed by serialization policy; counts/unique IDs checked. No restore |
 | Users: `user.get`, `selectUsrgrps`, `selectMedias` | User identity/name, role/group IDs, selected UI settings, directory ID, URL, media destinations, severity, period and active flags | User passwords, API tokens and MFA secrets are not collected | Super admin probe; counts/unique IDs checked. No restore; unavailable credentials require re-entry |
 | User groups: `usergroup.get` and rights/tag-filter selectors | Identities, access/MFA flags, rights, tag-filter names and values | External directory and MFA configuration not collected | Counts/unique IDs checked; instance-local references; no restore |
 | Roles: `role.get`, `selectRules` | Names/types, UI/action/module/service permissions, API lists and service-tag rules | Referenced modules/services are not independently collected | Counts/unique IDs checked; unknown rules stop export; no restore |
@@ -38,12 +39,12 @@ Resolved Vault secrets are not available through native export. See the official
 [secret macro documentation](https://www.zabbix.com/documentation/7.4/en/manual/config/macros/secret_macros).
 Readable values returned by the API are preserved even when potentially sensitive.
 
-The shared 7.0/7.4 policy retains reviewed structures and rejects unknown fields in those structures
+The shared 7.0/7.4/8.0 policy retains reviewed structures and rejects unknown fields in those structures
 without exposing field names or values in public errors. Free-form payload subtrees preserve all
 returned fields and array order. Update intervals and user-media periods retain semicolon-separated
 schedules, including contextual macro references; contexts are no longer redacted.
 
-On 7.4, configured discovery prototypes are independently enumerated through `discoveryruleprototype.get`
+On 7.4 and 8.0, configured discovery prototypes are independently enumerated through `discoveryruleprototype.get`
 and compared with the native discovery-rule list. Generated LLD rules (flags 5) and generated discovery
 prototypes (flags 7) are runtime results and excluded from this comparison. Configured roots (flags 1)
 and prototypes (flags 3), and their child item/trigger prototypes, must match.
@@ -51,7 +52,44 @@ and prototypes (flags 3), and their child item/trigger prototypes, must match.
 Snapshots retain the existing native-shaped envelope and can contain unreadable markers. They must not
 be fed directly to `configuration.import` without schema-aware preparation and dependency resolution.
 
-## Template scope coverage (7.0 and 7.4)
+## Zabbix 8.0 differences
+
+The 8.0 API change log, installed `8.0.0` API services, export builder and `C80ImportValidator`
+were reviewed against 7.4. Live getters confirm that existing ID fields, parent-template/prototype
+relations, action operation selectors and count semantics remain usable. `configuration.export` still
+accepts JSON and explicit host/template ID arrays; its envelope declares version `8.0`, now verified
+against the actual API series. No import/update operation is used.
+
+| Area | 8.0 handling |
+| --- | --- |
+| Native items, prototypes and discovery | Preserve telemetry `query`, `time_shift`, `lookback_limit`, `granularity`; JSON value type uses the existing scalar policy. Query payloads retain fields and array order |
+| SNMP host/prototype interfaces | Preserve `retries`, including macros; retain macro-capable `max_repetitions` and readable authentication/privacy values |
+| Actions | New proxy-group condition type 29 is retained; template-link operations 6/7 and operation references keep their reviewed structures |
+| Media types | Push type 5 is retained. Full `mediatype.get` output preserves readable SMTP OAuth endpoints, client ID/secret, access/refresh tokens, status and expiry metadata on 7.4/8.0; 7.0 `content_type` is also covered. Unknown fields still fail closed |
+| Users | Request and retain `default_maintenance_period` on 8.0 only |
+| User groups | Request and retain `proxy_mode`, `proxy_group_mode`, proxy/proxy-group ID relations and APM filters (`key`, `value`, `signal_type`) on 8.0 only |
+| Roles | Retain `profile.redirect.enforce`, `profile.redirect.url`, `devices.access`, `devices.actions`, `devices.actions.default_access` with the other complete readable rules |
+| New unrelated APIs | CEP/APM data/device management and new native global-regex export are outside the existing selected categories; no new category is implied |
+
+The media collector previously used a fixed output list that omitted readable OAuth fields. It now
+requests full output and applies explicit field policy, preserving those credentials rather than silently
+omitting them. Token refresh can legitimately change these credentials/metadata and produce a diff.
+GitKeeper's own Zabbix/GitHub worker authentication files remain outside snapshots.
+
+`used` live previews include 14 of 364 templates on the 8.0.0 host; `all` includes all 364. Counts are
+instance-specific, not a product limit. Synthetic 8.0 cases cover telemetry/SNMP macros, Push media,
+OAuth credentials, nonempty proxy/APM relations and new role rules without editing monitoring objects
+on the live host. Source review and fixture coverage for these optional structures are distinguished
+from the actual live population in [validation](validation.md).
+
+Official references: [8.0 API changes](https://www.zabbix.com/documentation/8.0/en/manual/api/changes),
+[8.0 export method](https://www.zabbix.com/documentation/8.0/en/manual/api/reference/configuration/export),
+[8.0 user groups](https://www.zabbix.com/documentation/8.0/en/manual/api/reference/usergroup/get),
+[8.0 host prototypes](https://www.zabbix.com/documentation/8.0/en/manual/api/reference/hostprototype/get),
+[8.0 role rules](https://www.zabbix.com/documentation/8.0/en/manual/api/reference/role/object),
+[8.0 module manifest](https://www.zabbix.com/documentation/8.0/en/devel/modules/file_structure/manifest).
+
+## Template scope coverage (7.0, 7.4 and 8.0)
 
 | Source | Included relations | Evidence for Smart Template Scope |
 | --- | --- | --- |

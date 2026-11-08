@@ -1,5 +1,7 @@
 import copy
 import json
+import io
+import errno
 import os
 import subprocess
 import tempfile
@@ -13,6 +15,8 @@ from urllib.error import HTTPError
 
 from zabbix_utils import APIRequestError, ProcessingError
 
+from gitkeeper.errors import (APIAuthentication, APICompatibility, APIPermission, StructureError,
+                              UnsupportedVersion, failure_message, log_failure)
 from gitkeeper.exporter import Exporter, Incomplete
 from gitkeeper.git import Publisher
 from gitkeeper.github import GitHub, Reconnect, request as github_request
@@ -91,6 +95,8 @@ class FakeAPI:
         if self.fail:
             raise RuntimeError(SENTINEL)
         family, ids = next(iter(params["options"].items()))
+        if not ids:
+            return json.dumps({"zabbix_export": {"version": self.version[:3]}})
         host = next(r["host"] for r in (self.host.rows if family == "hosts" else self.template.rows)
                     if r.get("hostid", r.get("templateid")) == ids[0])
         items = [{"uuid": "c" * 32, "name": "CPU", "type": "ZABBIX_PASSIVE", "key": SENTINEL,
@@ -108,7 +114,7 @@ class FakeAPI:
                "httptests": [{"http_password": SENTINEL}], "inventory": {"notes": SENTINEL},
                "discovery_rules": [{"name": "Discovery", "key": SENTINEL, "item_prototypes": [],
                                     "trigger_prototypes": [], "graph_prototypes": [], "host_prototypes": []}]}
-        if self.version.startswith("7.4") and family == "templates":
+        if self.version.startswith(("7.4", "8.0")) and family == "templates":
             obj.update(wizard_ready="YES", readme=SENTINEL)
             obj["macros"][0]["config"] = {"value": SENTINEL}
         return json.dumps({"zabbix_export": {"version": self.version[:3], "date": SENTINEL, family: [obj]}})
@@ -143,7 +149,7 @@ class ScopeTests(unittest.TestCase):
             command({"id": "a" * 32, "operation": "preview_scope", "params": {"template_scope": valid, "push": True}})
 
     def test_disabled_discovered_hosts_parents_cycles_and_unused_children(self):
-        for version in ("7.0.0", "7.4.15"):
+        for version in ("7.0.0", "7.4.15", "8.0.0"):
             with self.subTest(version=version):
                 api = self.api(version)
                 api.host.rows[0].update(status="1", flags="4")
@@ -159,7 +165,7 @@ class ScopeTests(unittest.TestCase):
                 self.assertTrue(all("selectTemplates" not in call for call in api.template.calls))
 
     def test_prototype_closure_only_on_relevant_parents_and_disabled_actions(self):
-        for version in ("7.0.0", "7.4.15"):
+        for version in ("7.0.0", "7.4.15", "8.0.0"):
             with self.subTest(version=version):
                 api = self.api(version)
                 api.hostprototype.rows = [
@@ -239,7 +245,7 @@ class ScopeTests(unittest.TestCase):
         self.assertTrue(all(not any(v == [] for v in call.values()) for call in api.template.calls))
 
     def test_used_exports_only_selected_keeps_native_validation_and_manifest(self):
-        for version in ("7.0.0", "7.4.15"):
+        for version in ("7.0.0", "7.4.15", "8.0.0"):
             with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 api = self.api(version)
@@ -302,7 +308,8 @@ class ScopeTests(unittest.TestCase):
             self.assertNotIn("template_scope", read_json(root / "all/manifest.json")["coverage"]["templates"])
             self.assertEqual(api.action.calls, [])
             exporter.check_permissions(["templates"])
-            self.assertEqual(api.hostprototype.calls, [])
+            self.assertTrue(api.hostprototype.calls)
+            self.assertEqual(api.action.calls, [])
             exporter.check_permissions(["templates"], self.used)
             self.assertTrue(api.hostprototype.calls)
             self.assertTrue(api.action.calls)
@@ -331,7 +338,7 @@ class CoreTests(unittest.TestCase):
                      "params": {"client_id": "fixture", "client_secret": SENTINEL}})
 
     def test_determinism_readable_configuration_and_version_fixtures(self):
-        for version in ("7.0.0", "7.4.0"):
+        for version in ("7.0.0", "7.4.0", "8.0.0"):
             api = FakeAPI(version)
             with tempfile.TemporaryDirectory() as directory:
                 a, b = Path(directory) / "a", Path(directory) / "b"
@@ -395,7 +402,7 @@ class CoreTests(unittest.TestCase):
 
     def test_custom_intervals_context_macros_and_safe_scalar_errors(self):
         interval = "1h;wd1-5h9-18;{$FLEX_INTERVAL}/1-7,00:00-24:00;0/6-7,12:00-24:00"
-        for version in ("7.0.0", "7.4.15"):
+        for version in ("7.0.0", "7.4.15", "8.0.0"):
             with self.subTest(version=version):
                 api = FakeAPI(version)
                 api.delay = interval
@@ -431,7 +438,7 @@ class CoreTests(unittest.TestCase):
             self.assertNotIn(SENTINEL, str(result.exception))
 
     def test_native_host_prototype_group_links_and_safe_policy_error(self):
-        for version in ("7.0.0", "7.4.15"):
+        for version in ("7.0.0", "7.4.15", "8.0.0"):
             with self.subTest(version=version):
                 api = FakeAPI(version)
                 original = api.native
@@ -481,7 +488,7 @@ class CoreTests(unittest.TestCase):
             self.assertFalse((Path(directory) / "manifest.json").exists())
 
     def test_native_progress_counts_only_checked_objects_and_does_not_change_snapshot(self):
-        for version in ("7.0.0", "7.4.15"):
+        for version in ("7.0.0", "7.4.15", "8.0.0"):
             with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
                 api = FakeAPI(version)
                 progress = Mock()
@@ -559,6 +566,132 @@ class CoreTests(unittest.TestCase):
                 self.assertEqual(result.strip(), "False")
             with process_lock(path) as second:
                 self.assertTrue(second)
+
+
+class CompatibilityTests(unittest.TestCase):
+    def test_unknown_series_rejected_before_authentication(self):
+        for version in ("7.2.0", "8.2.0", "9.0.0", "8.0.0rc1", "8.0", SENTINEL):
+            with self.subTest(version=version), patch("gitkeeper.exporter.ZabbixAPI") as client:
+                client.return_value.apiinfo.version.return_value = version
+                with self.assertRaises(UnsupportedVersion) as raised:
+                    Exporter({"url": "http://localhost/api_jsonrpc.php", "token": TOKEN})
+                client.return_value.login.assert_not_called()
+                client.return_value.authentication.get.assert_not_called()
+                self.assertNotIn(SENTINEL, str(raised.exception))
+
+    @staticmethod
+    def rejection(code, data):
+        return APIRequestError({"code": code, "message": SENTINEL, "data": data, "body": {"token": TOKEN}})
+
+    def test_authentication_permissions_and_incompatible_parameters_are_distinct(self):
+        for code, data, expected in (
+            (-32602, "Not authorized.", APIAuthentication),
+            (-32602, "Session terminated, re-login, please.", APIAuthentication),
+            (-32500, "API token expired.", APIAuthentication),
+            (-32500, 'No permissions to call "host.get".', APIPermission),
+            (-32601, SENTINEL, APICompatibility),
+            (-32602, SENTINEL, APICompatibility)
+        ):
+            with self.subTest(code=code, data=data):
+                api = FakeAPI("8.0.0")
+                exporter = Exporter({}, api)
+                api.host.get = Mock(side_effect=self.rejection(code, data))
+                with self.assertRaises(expected) as raised:
+                    exporter.check_permissions(["hosts"])
+                self.assertNotIn(SENTINEL, str(raised.exception))
+                self.assertNotIn(TOKEN, str(raised.exception))
+                stream = io.StringIO()
+                with patch("sys.stderr", stream):
+                    log_failure(raised.exception)
+                self.assertIn("exporter.py:call", stream.getvalue())
+                self.assertNotIn(SENTINEL, stream.getvalue())
+                self.assertNotIn(TOKEN, stream.getvalue())
+                api.configuration = Mock()
+                with tempfile.TemporaryDirectory() as directory, self.assertRaises(expected):
+                    exporter.export(["hosts"], Path(directory))
+                api.configuration.export.assert_not_called()
+        api = FakeAPI("8.0.0")
+        api.authentication.get.side_effect = self.rejection(-32500, 'No permissions to call "authentication.get".')
+        with self.assertRaisesRegex(APIPermission, "Super admin"):
+            Exporter({}, api)
+
+    def test_80_collector_fields_and_native_payloads_are_preserved(self):
+        api = FakeAPI("8.0.0")
+        api.user.rows[0]["default_maintenance_period"] = "1h"
+        api.usergroup.rows[0].update(proxy_mode="1", proxy_group_mode="1", proxies=[{"proxyid": "10"}],
+            proxy_groups=[{"proxy_groupid": "11"}], apm_filters=[{"key": "service.name", "value": SENTINEL, "signal_type": "0"}])
+        rules = api.role.rows[0]["rules"]
+        rules.update({"profile.redirect.enforce": "1", "profile.redirect.url": "zabbix.php?action=dashboard.view",
+                      "devices.access": "1", "devices.actions.default_access": "1",
+                      "devices.actions": [{"name": "edit_own_media", "status": "1"}]})
+        api.mediatype.rows[0].update(client_secret=SENTINEL, access_token=SENTINEL, refresh_token=SENTINEL,
+                                    access_token_updated="123", access_expires_in="3600", tokens_status="1")
+        api.mediatype.rows[0]["type"] = "5"  # New Push type; readable fields retain the current policy.
+        original = api.native
+        def native(**params):
+            data = json.loads(original(**params))
+            family = next(iter(params["options"]))
+            obj = data["zabbix_export"][family][0]
+            obj["items"][0].update(type="TELEMETRY_QUERY", value_type="JSON", time_shift="1h",
+                lookback_limit="1d", granularity="1m", query={"signal_type": "TRACES", "columns": [
+                    {"column": "attributes", "attribute_key": SENTINEL, "alias": "value"}]})
+            obj["interfaces"][0]["details"].update(retries="{$RETRIES}", max_repetitions="{$MAX_REPETITIONS}")
+            return json.dumps(data)
+        api.configuration.export = native
+        with tempfile.TemporaryDirectory() as directory:
+            stage = Path(directory)
+            Exporter({}, api).export(["hosts", "templates", "actions", "users", "media_types"], stage)
+            self.assertEqual(read_json(stage / "users/user/7.json")["default_maintenance_period"], "1h")
+            self.assertEqual(read_json(stage / "users/usergroup/8.json")["apm_filters"], api.usergroup.rows[0]["apm_filters"])
+            self.assertEqual(read_json(stage / "users/role/3.json")["rules"], rules)
+            media = read_json(stage / "media_types/mediatype/6.json")
+            self.assertEqual(media["type"], "5")
+            self.assertEqual(media["client_secret"], SENTINEL)
+            self.assertEqual(media["access_token"], SENTINEL)
+            self.assertEqual(media["refresh_token"], SENTINEL)
+            host = read_json(stage / "hosts/1.json")["hosts"][0]
+            self.assertEqual(host["interfaces"][0]["details"]["retries"], "{$RETRIES}")
+            self.assertIn(SENTINEL, encode(host["items"]))
+            self.assertEqual(read_json(stage / "manifest.json")["zabbix_version"], "8.0.0")
+        call = next(c for c in api.usergroup.calls if not c.get("countOutput"))
+        self.assertEqual(call["selectApmFilters"], ["key", "value", "signal_type"])
+        for version in ("7.0.0", "7.4.15"):
+            api = FakeAPI(version)
+            media_fields = {"content_type": "0"} if version.startswith("7.0") else {"client_secret": SENTINEL}
+            api.mediatype.rows[0].update(media_fields)
+            with tempfile.TemporaryDirectory() as directory:
+                Exporter({}, api).export(["users", "media_types"], Path(directory))
+                media = read_json(Path(directory) / "media_types/mediatype/6.json")
+                self.assertTrue(media_fields.items() <= media.items())
+            self.assertTrue(all("selectProxies" not in c and "proxy_mode" not in c.get("output", [])
+                                for c in api.usergroup.calls))
+
+    def test_native_version_unknown_fields_and_malformed_probe_fail_closed(self):
+        api = FakeAPI("8.0.0")
+        api.authentication.get.return_value = []
+        with self.assertRaises(StructureError):
+            Exporter({}, api)
+        api = FakeAPI("8.0.0")
+        exporter = Exporter({}, api)
+        api.configuration.export = lambda **params: json.dumps({"zabbix_export": {"version": "7.4"}})
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(StructureError):
+                exporter.export(["hosts"], Path(directory))
+            self.assertFalse((Path(directory) / "manifest.json").exists())
+        with self.assertRaises(StructureError) as raised:
+            sanitize({SENTINEL: SENTINEL}, "role_rules", set())
+        self.assertNotIn(SENTINEL, str(raised.exception))
+
+    def test_diagnostics_keep_class_and_code_locations_without_exception_contents(self):
+        for exc in (RuntimeError(SENTINEL), PermissionError(errno.EACCES, SENTINEL, SENTINEL),
+                    OSError(errno.ENOSPC, SENTINEL, SENTINEL)):
+            stream = io.StringIO()
+            with patch("sys.stderr", stream):
+                log_failure(exc)
+            self.assertIn(type(exc).__name__, stream.getvalue())
+            self.assertNotIn(SENTINEL, stream.getvalue() + failure_message(exc))
+        self.assertIn("access denied", failure_message(PermissionError(errno.EACCES, SENTINEL)))
+        self.assertIn("filesystem", failure_message(OSError(errno.ENOSPC, SENTINEL)))
 
 
 class GitHubTests(unittest.TestCase):
@@ -930,18 +1063,19 @@ class WorkerTests(unittest.TestCase):
     @patch("gitkeeper.exporter.ZabbixAPI")
     def test_http_loopback_and_optional_https_certificate_verification(self, client):
         client.return_value.apiinfo.version.return_value = "7.4.15"
+        client.return_value.authentication.get.return_value = {"authentication_type": "0"}
         for endpoint, verify in [("http://127.0.0.1/zabbix/api_jsonrpc.php", True),
                                  ("https://127.0.0.1/zabbix/api_jsonrpc.php", False),
                                  ("https://zabbix.example/api_jsonrpc.php", True)]:
             params = {"url": endpoint, "token": TOKEN, "verify_tls": verify}
             self.worker.execute(command({"id": "a" * 32, "operation": "set_zabbix", "params": params}))
-            client.assert_called_with(url=endpoint, timeout=30, validate_certs=verify)
+            client.assert_called_with(url=endpoint, timeout=30, validate_certs=verify, skip_version_check=True)
             client.return_value.login.assert_called_with(token=TOKEN)
             self.assertEqual(read_json(self.root / "private/zabbix.json"), params)
             self.assertEqual(read_json(self.worker.public)["zabbix_verify_tls"], verify)
             self.assertNotIn(TOKEN, self.worker.public.read_text())
         Exporter({"url": "https://example/api_jsonrpc.php", "token": TOKEN})
-        client.assert_called_with(url="https://example/api_jsonrpc.php", timeout=30, validate_certs=True)
+        client.assert_called_with(url="https://example/api_jsonrpc.php", timeout=30, validate_certs=True, skip_version_check=True)
 
     def test_api_endpoint_and_tls_option_validation(self):
         for endpoint in ("http://127.0.0.1/zabbix/api_jsonrpc.php", "https://localhost:8443/api_jsonrpc.php"):
@@ -1195,6 +1329,7 @@ class WorkerTests(unittest.TestCase):
         atomic_json(self.root / "private/zabbix.json", {"token": TOKEN})
         self.worker.github.repository = Mock(return_value={"id": 42, "private": True})
         self.worker.github.token = Mock(return_value="ghu_fixture")
+        exporter.return_value.version = "8.0.0"
         exporter.return_value.export.return_value = {"hosts": {"state": "exported", "objects": 1}}
 
         def publish(stage):

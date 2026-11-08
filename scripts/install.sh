@@ -67,7 +67,7 @@ FRONTEND=$(realpath -e -- "$FRONTEND")
 # PHP, not the shell, expands $argv.
 # shellcheck disable=SC2016
 VERSION=$(php -r 'include $argv[1]; echo ZABBIX_VERSION;' "$FRONTEND/include/defines.inc.php")
-[[ $VERSION == 7.0.* || $VERSION == 7.4.* ]] || die 'This export policy targets Zabbix 7.0 and 7.4 only; real compatibility still requires verification.'
+[[ $VERSION =~ ^(7\.0|7\.4|8\.0)\.[0-9]+$ ]] || die 'This export policy supports stable Zabbix 7.0, 7.4 and 8.0 LTS only; real compatibility still requires verification.'
 MODULES=$(realpath -e -- "$FRONTEND/modules")
 [[ $MODULES == "$FRONTEND/modules" ]] || die 'Symlinked modules paths require a reviewed installation layout.'
 
@@ -162,4 +162,4 @@ printf '%s\n' 'Installed. Restart PHP-FPM/Apache to pick up group membership.' \
     'In Administration > General > Modules: Scan directory, then enable Zabbix GitKeeper.' \
     'Open Administration > GitKeeper > GitHub and save your GitHub App Client ID if not supplied during installation.' \
     'Configure Zabbix API access, connect/install the GitHub App, select a private repository and Save & Sync.' \
-    'Compatibility targets: 7.0 and 7.4; no live Zabbix integration is certified yet.'
+    'Reviewed series: 7.0, 7.4 and 8.0 LTS. See docs/validation.md for actual live evidence.'

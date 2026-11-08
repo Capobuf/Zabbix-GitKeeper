@@ -7,15 +7,16 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from .storage import Error, Transient, read_json
+from .errors import GitError
+from .storage import Transient, read_json
 
 
 class Publisher:
     def __init__(self, root: Path, repo: dict, token: str):
         if repo.get("private") is not True:
-            raise Error("Public repositories are forbidden.")
+            raise GitError("Public repositories are forbidden.")
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo["full_name"]):
-            raise Error("Invalid GitHub repository identity.")
+            raise GitError("Invalid GitHub repository identity.")
         self.branch = repo["default_branch"]
         self.root = root
         self.checkout = root / str(int(repo["id"]))
@@ -34,12 +35,12 @@ class Publisher:
         except subprocess.TimeoutExpired:
             raise Transient("Git operation timed out; retry with bounded backoff.") from None
         except OSError:
-            raise Error("Git failed or timed out. Check connectivity and local repository health.") from None
+            raise GitError("Git failed or timed out. Check connectivity and local repository health.") from None
         if result.returncode:
             # Git stderr can contain remote-controlled text; never surface it.
             if args[0] in ("clone", "fetch", "push") and result.returncode == 128:
                 raise Transient("Git transport or authentication failed; retry with bounded backoff.")
-            raise Error("Git rejected the operation. Check write access, branch protection and divergence.")
+            raise GitError("Git rejected the operation. Check write access, branch protection and divergence.")
         return result.stdout.strip()
 
     def publish(self, stage: Path) -> tuple[str, bool]:
@@ -49,9 +50,9 @@ class Publisher:
             self.git("clone", "--no-tags", "--single-branch", "--branch", self.branch, "--", self.url,
                      str(self.checkout))
         if self.git("remote", "get-url", "origin", cwd=self.checkout) != self.url:
-            raise Error("Local repository origin differs from the authorized destination.")
+            raise GitError("Local repository origin differs from the authorized destination.")
         if self.git("status", "--porcelain", cwd=self.checkout):
-            raise Error("Local checkout contains unexpected changes; inspect it before retrying.")
+            raise GitError("Local checkout contains unexpected changes; inspect it before retrying.")
         self.git("fetch", "--no-tags", "origin", cwd=self.checkout)
         self.git("merge", "--ff-only", "refs/remotes/origin/" + self.branch, cwd=self.checkout)
         with tempfile.TemporaryDirectory(prefix="publish-", dir=self.root) as directory:
@@ -61,12 +62,12 @@ class Publisher:
                 managed = work / "gitkeeper"
                 if managed.exists() or managed.is_symlink():
                     if managed.is_symlink() or not managed.is_dir() or any(p.is_symlink() for p in managed.rglob("*")):
-                        raise Error("Unsafe managed area in destination repository.")
+                        raise GitError("Unsafe managed area in destination repository.")
                     manifest = read_json(managed / "manifest.json")
                     expected = set(manifest.get("checksums", {})) | {"manifest.json"}
                     actual = {p.relative_to(managed).as_posix() for p in managed.rglob("*") if p.is_file()}
                     if manifest.get("schema") not in (1, 2) or not manifest.get("gitkeeper_version") or expected != actual:
-                        raise Error("Destination managed area contains foreign files; no files removed.")
+                        raise GitError("Destination managed area contains foreign files; no files removed.")
                     shutil.rmtree(managed)
                 shutil.copytree(stage, managed)
                 self.git("add", "--all", "--", "gitkeeper", cwd=work)

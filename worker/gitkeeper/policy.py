@@ -1,4 +1,4 @@
-"""Explicit context-based policy shared by reviewed 7.0 and 7.4 schemas.
+"""Explicit context-based policy shared by reviewed 7.0, 7.4 and 8.0 schemas.
 
 Preserve readable configuration and credentials, including free-form payloads.
 Only values unavailable from Zabbix are marked as unreadable.
@@ -7,12 +7,12 @@ Only values unavailable from Zabbix are marked as unreadable.
 import json
 import re
 
-from .storage import Error
+from .errors import StructureError
 
 UNREADABLE = "<not-readable: secret macro>"
 
 
-class PolicyError(Error):
+class PolicyError(StructureError):
     """Unsupported structure, described only with reviewed schema paths."""
 
 
@@ -24,9 +24,9 @@ def rule(identity="", scalar="", payload="", children=None):
 ITEM = rule("uuid name interface_ref", "type value_type history trends status discover inventory_link "
             "authtype timeout post_type status_codes follow_redirects retrieve_mode request_method "
             "output_format allow_traps verify_peer verify_host lifetime lifetime_type enabled_lifetime "
-            "enabled_lifetime_type", "key snmp_oid allowed_hosts params ipmi_sensor username password "
+            "enabled_lifetime_type time_shift lookback_limit granularity", "key snmp_oid allowed_hosts params ipmi_sensor username password "
             "publickey privatekey description jmx_endpoint url query_fields parameters posts http_proxy "
-            "headers ssl_cert_file ssl_key_file ssl_key_password logtimefmt units parent_discovery_rule",
+            "query headers ssl_cert_file ssl_key_file ssl_key_password logtimefmt units parent_discovery_rule",
             {"tags": "tags", "preprocessing": "preprocessing", "valuemap": "reference", "master_item": "master",
              "triggers": "trigger", "trigger_prototypes": "trigger", "delay": "schedule"})
 TRIGGER = rule("uuid name", "recovery_mode correlation_mode type status priority manual_close discover",
@@ -50,7 +50,7 @@ SCHEMAS = {
                   "graph_prototypes": "graph", "host_prototypes": "host", "lld_macro_paths": "payload",
                   "overrides": "payload"},
     "interface": rule("interface_ref ip dns", "default type useip port", "", {"details": "snmp"}),
-    "snmp": rule("", "version bulk securitylevel authprotocol privprotocol max_repetitions",
+    "snmp": rule("", "version bulk securitylevel authprotocol privprotocol max_repetitions retries",
                  "community contextname securityname authpassphrase privpassphrase"),
     "macro": rule("macro", "type", "value description config"),
     "tags": rule("tag", "operator", "value"),
@@ -81,21 +81,26 @@ SCHEMAS = {
     "opcondition": rule("opconditionid operationid", "conditiontype operator", "value"),
     "media": rule("mediatypeid name", "type status smtp_port smtp_security smtp_verify_peer smtp_verify_host "
                   "smtp_authentication maxsessions maxattempts attempt_interval message_format timeout "
-                  "process_tags show_event_menu provider", "smtp_server smtp_helo smtp_email exec_path gsm_modem "
-                  "username passwd script parameters event_menu_url event_menu_name description",
+                  "process_tags show_event_menu provider content_type tokens_status access_token_updated access_expires_in", "smtp_server smtp_helo smtp_email exec_path gsm_modem "
+                  "username passwd script parameters event_menu_url event_menu_name description "
+                  "redirection_url client_id client_secret authorization_url token_url access_token refresh_token",
                   {"message_templates": "message_template"}),
     "message_template": rule("", "eventsource recovery", "subject message"),
     "user": rule("userid username name surname roleid", "autologin autologout lang refresh theme rows_per_page "
-                 "userdirectoryid ts_provisioned", "url", {"usrgrps": "user_group_ref", "medias": "user_media"}),
+                 "userdirectoryid ts_provisioned default_maintenance_period", "url", {"usrgrps": "user_group_ref", "medias": "user_media"}),
     "user_group_ref": rule("usrgrpid"),
     "user_media": rule("mediaid mediatypeid", "active severity", "sendto", {"period": "schedule"}),
-    "user_group": rule("usrgrpid name", "gui_access users_status debug_mode userdirectoryid mfa_status mfaid",
-                       "", {"hostgroup_rights": "right", "templategroup_rights": "right", "tag_filters": "tag_filter"}),
+    "user_group": rule("usrgrpid name", "gui_access users_status debug_mode userdirectoryid mfa_status mfaid proxy_mode proxy_group_mode",
+                       "", {"hostgroup_rights": "right", "templategroup_rights": "right", "tag_filters": "tag_filter", "proxies": "proxy_ref", "proxy_groups": "proxy_group_ref",
+                            "apm_filters": "apm_filter"}),
+    "proxy_ref": rule("proxyid"), "proxy_group_ref": rule("proxy_groupid"),
+    "apm_filter": rule("key", "signal_type", "value"),
     "right": rule("id", "permission"), "tag_filter": rule("groupid tag", "", "value"),
     "role": rule("roleid name", "type readonly", "", {"rules": "role_rules"}),
     "role_rules": rule("", "ui.default_access services.read.mode services.write.mode modules.default_access "
-                       "api.access api.mode actions.default_access", "api services.read.tag services.write.tag",
-                       {"ui": "role_access", "actions": "role_access", "modules": "module_access",
+                       "api.access api.mode actions.default_access profile.redirect.enforce devices.access "
+                       "devices.actions.default_access", "api services.read.tag services.write.tag profile.redirect.url",
+                       {"ui": "role_access", "actions": "role_access", "devices.actions": "role_access", "modules": "module_access",
                         "services.read.list": "service_ref", "services.write.list": "service_ref"}),
     "role_access": rule("name", "status"), "module_access": rule("moduleid", "status"),
     "service_ref": rule("serviceid")
@@ -104,7 +109,7 @@ SCHEMAS = {
 SETS = {"host_groups", "template_groups", "hosts", "templates", "groups", "items", "discovery_rules", "tags",
         "macros", "valuemaps", "triggers", "graphs", "dependencies", "item_prototypes", "trigger_prototypes",
         "graph_prototypes", "host_prototypes", "usrgrps", "medias", "hostgroup_rights", "templategroup_rights",
-        "tag_filters", "opmessage_grp", "opmessage_usr", "opcommand_hst", "opcommand_grp", "opgroup", "optemplate"}
+        "tag_filters", "proxies", "proxy_groups", "apm_filters", "opmessage_grp", "opmessage_usr", "opcommand_hst", "opcommand_grp", "opgroup", "optemplate"}
 
 
 def encode(value) -> str:
@@ -118,7 +123,7 @@ def sanitize(value, context: str, excluded: set[str], path: str = "", collection
         result = [sanitize(v, context, excluded, path + "[]") for v in value]
         return sorted(result, key=encode) if collection in SETS else result
     if not isinstance(value, dict) or context not in SCHEMAS:
-        raise Error("Export field shape is not covered by the serialization policy.")
+        raise PolicyError("Export field shape is not covered by the serialization policy.")
     result = {}
     schema = SCHEMAS[context]
     if set(value) - set(schema):

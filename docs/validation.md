@@ -1,5 +1,143 @@
 # Validation evidence and remaining acceptance checks
 
+## Zabbix 8.0 LTS — 2026-11-08
+
+This session uses the existing operational host with **Zabbix 8.0.0**, server revision
+`c81e276e505`, Ubuntu **24.04.5 LTS**, PHP **8.3.6**, Python **3.12.3**, Node **18.19.1**; package `2:8.0.0-1+ubuntu24.04` for server/frontend/agent. This is actual
+8.0 API, installer and browser evidence. Zabbix 7.0/7.4 regressions in this session use fixtures;
+the earlier dated 7.4.15 live records below remain historical evidence. No other 8.0 patch or
+installation layout is certified by this test.
+
+### Initial state and reproduced failure
+
+The installed worker matched source `dedbbcf`; its saved scope was legacy `all` with all five
+implemented categories and a 4320-minute cadence. Tokens, App settings and the existing private
+backup checkout were retained. The source repository was cloned separately on clean `main`, with
+remote `https://github.com/Capobuf/Zabbix-GitKeeper.git` and no pre-existing local edits overwritten.
+The Zabbix server, Apache and systemd queue watcher were active; the oneshot worker was idle.
+
+The recorded generic `Operation failed. Check Zabbix API permissions, policy coverage and local
+filesystem access.` was reproduced with the installed worker and existing credentials. The actual
+exception was **`zabbix_utils.APINotSupported` in `ZabbixAPI.__check_version`**, raised by pinned
+`zabbix-utils==2.0.4` at construction on 8.0, before GitKeeper's own version/token probes. That
+exception was outside the old classified error boundary. GitKeeper now owns the strict stable
+7.0/7.4/8.0 policy before token login, and reports unsupported versions safely. Unknown versions
+are still rejected. No client fork, new dependency or generic compatibility bypass was introduced.
+
+The existing token successfully called the Super-admin-only `authentication.get`. Its actual 8.0
+current role was Super admin, with `api.access=1`, `api.mode=0` (deny list), and no method
+entries; there was no need to change API access, allow lists, account privileges
+or monitoring objects. New `role.get(selectRules="extend")` keys required explicit policy support.
+Full media output review additionally found previously omitted readable OAuth credentials; those are
+now preserved under the existing readable-credentials policy. See [coverage](coverage.md).
+
+### Read-only live inventory and exports
+
+All the following getters were called successfully with the existing bearer token. Counts are
+whole-instance API populations at the test time, including inherited/runtime objects where the getter
+normally returns them; native cross-checks separately restrict to configured, non-inherited objects.
+
+| Getter | Objects |
+| --- | ---: |
+| `host.get` / `hostgroup.get` | 18 / 12 |
+| `template.get` / `templategroup.get` | 364 / 12 |
+| `item.get` / `trigger.get` | 11849 / 4703 |
+| `discoveryrule.get` / `discoveryruleprototype.get` | 1916 / 14 |
+| `itemprototype.get` / `triggerprototype.get` | 8635 / 4064 |
+| `hostprototype.get` | 51 |
+| `action.get` / `mediatype.get` | 7 / 42 |
+| `user.get` / `usergroup.get` / `role.get` | 4 / 8 / 5 |
+
+- Native `configuration.export(format="json", options={hosts|templates: [id]})`, monitored object
+  identity checks, independent item/trigger/LLD/prototype comparisons, count/unique-ID checks and
+  final inventories passed for all 18 hosts and all 364 templates.
+- Temporary `used` snapshot: **43.14 seconds**; coverage totals hosts/groups **30**, templates/groups
+  **26** (14 templates plus 12 groups), actions **7**, media types **42**, users/groups/roles **17**.
+- Temporary `all` snapshot: **647.36 seconds**; same other categories and templates/groups **376**.
+  These initial complete snapshots preceded the full media-output adjustment. The final media/users
+  collectors were then checked separately against live full responses; all 42 media types and all
+  users/groups/roles passed. Final installed synchronization is recorded below.
+- `all` preview includes 364/excludes 0; automatic `used` includes 14/excludes 350. The resolver read
+  actual template parents, every host, host-prototype owning hosts/template links, and normal/recovery/
+  update action operations, then verified the graph again. Neither preview exported or published objects.
+- Readable credentials were retained in private staging; unavailable secret-text macros were marked
+  explicitly and the user-password/token/MFA exclusion remained declared. Temporary snapshots were
+  removed. No export content or secret value was printed.
+
+### Installed integration and error diagnostics
+
+The existing `scripts/install.sh --frontend-root /usr/share/zabbix/ui --web-user www-data` upgraded
+the worker/module on 8.0.0. A root-only code rollback archive was created first. Before/after SHA-256
+checks confirmed unchanged settings, Zabbix token, GitHub authorization and saved App settings at
+installation time. Installed Python files matched the tested source. No Zabbix core file was edited.
+
+A separate headless Chromium session logged into the real frontend and verified HTTP 200, module
+navigation, both Panoramica/Impostazioni tabs and no JavaScript page errors. Actual CSRF-bearing forms,
+queue processing, systemd activation and correlated frontend polling exercised:
+
+- An intentionally invalid, unsaved token: frontend verification failed with **APIAuthentication**;
+  the previously verified token remained available. Resubmitting the existing token succeeded and
+  displayed API version 8.0.0. The former generic error did not recur.
+- Real invalid `user.get` output parameters: **APICompatibility**, with a fixed message naming the
+  failed method and no raw API data.
+- Scope previews in both modes: native form submissions, completed results and the above exact counts.
+- Save & Sync with the existing private repository, all selected categories, 4320-minute interval and
+  `all` scope preserved; successful save started an actual installed-worker synchronization. Real frontend
+  polling displayed `Esportazione in corso` and progressed from 130/364 to 132/364 checked templates
+  without reload or JavaScript errors.
+
+The worker journal recorded `APIAuthentication` and GitKeeper filename/function/line locations plus
+the wrapped `APIRequestError` class. Checks confirmed the configured API token was absent from journal
+and public status. No API response/request bodies, export contents, macro values or exception strings
+are emitted by the new diagnostic boundary. Filesystem permission/full-disk errors, unknown structures,
+incomplete enumerations and Git/GitHub failures have separate safe messages/classes.
+
+### Completed private GitHub publication
+
+The installed Save & Sync completed in **656.82 seconds** and published one ordinary commit to the
+existing authorized private destination. The previous backup HEAD is an ancestor of the new HEAD;
+no history was rewritten. Final coverage: actions **7**, hosts/groups **30**, media types **42**,
+templates/groups **376**, users/groups/roles **17**. The snapshot has **451 JSON files** including a
+schema-2 manifest declaring `zabbix_version: "8.0.0"`; every listed checksum was verified against
+published checkout bytes.
+
+A second real Publisher operation on the identical complete snapshot returned the **same HEAD** and
+`changed=False`: no redundant GitHub commit. This was a publication/no-change check, not a second
+full 364-template synchronization. An independent live `used` export with the final code then completed
+in **44.32 seconds**: all **100 non-manifest JSON files** exactly matched their counterparts in the
+published `all` snapshot, including host/template payloads, readable credentials, media OAuth fields
+and users/access rules. Its scope-specific manifest intentionally differs and was not published.
+
+The real frontend displayed **Snapshot pubblicato**, an empty error area and no JavaScript page errors.
+The obsolete generic error disappeared after the successful synchronization. Zabbix server, Apache
+and the GitKeeper path watcher remain active; the oneshot worker is normally idle with
+`Result=success`, `ExecMainStatus=0`. The next snapshot is scheduled using the retained 4320-minute
+cadence. Destination, categories and effective `all` scope remain unchanged; saving made the legacy
+`all` scope explicit. Zabbix/GitHub credential and App-setting hashes still match the pre-upgrade values.
+
+### Regression checks and limits
+
+**67 Python tests passed**, including all existing regressions, new 8.0 fields/credentials, unknown
+series rejected before login, invalid/expired-token versus method-permission classification, incompatible
+parameters, malformed/native schema version mismatches, safe journal output and real local Git
+history/no-change tests. Scope, determinism and readable-credentials fixtures now cover all three series.
+Ruff, compileall, PHP lint/contracts, frontend polling tests, Bash syntax, ShellCheck and package build
+passed locally on the host. The root installer smoke script was not run on this operational installation;
+it remains restricted to disposable CI and now covers accepted 7.0/7.4/8.0 upgrades and unknown-version
+rejection.
+
+No live 7.0/7.4 instance was tested in this session. Token expiry/revocation and disabled/empty-allow-list
+role failures use official source review and failure fixtures; the actual existing token, its effective
+Super admin role and invalid-token rejection were tested live. No live role/token was altered to force a
+failure. Fresh installation, fresh OAuth registration/device authorization, optional telemetry items,
+macro-valued SNMP retry settings and nonempty APM/proxy permission topologies were not created for this
+test; their source-derived synthetic cases are distinct from actual instance data.
+
+Existing scope limits remain: graph/host-prototype payloads rely on native export, referenced scripts/
+modules/services outside selected collectors are not backed up independently, API reads provide no
+transactional snapshot, and unreadable passwords/secret macros cannot be recovered. No restore or full
+disaster recovery claim is made. Monitoring configuration and Zabbix privileges were not modified.
+
 ## Readable configuration and credentials, 2026-10-12
 
 The export policy now preserves previously omitted readable configuration and credentials:

@@ -46,8 +46,9 @@ confidential local data. No persistent credentials are stored in the document ro
 ## Export and publication
 
 The official `zabbix-utils` client checks `apiinfo.version` before using a token. The reviewed target
-series are 7.0 and 7.4; unknown versions stop. A Super-admin-only probe prevents silently filtered
-visibility. API getters are unbounded by `limit`: count-before/read/count-after and unique IDs detect
+series are stable 7.0, 7.4 and 8.0; unknown versions and prereleases stop before token login.
+GitKeeper owns this strict series policy because the pinned client's built-in upper-version check predates 8.0.
+A Super-admin-only probe prevents silently filtered visibility. API getters are unbounded by `limit`: count-before/read/count-after and unique IDs detect
 truncation/count changes. Zabbix has no universal offset pagination for these getters, so no invented
 pagination parameters are used. Native exports are batched one host/template per call. Native items,
 triggers, discovery rules and item/trigger prototypes are cross-checked with separate getters. No API

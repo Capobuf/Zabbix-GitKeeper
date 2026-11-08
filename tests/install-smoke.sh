@@ -18,9 +18,20 @@ bash "$SOURCE/scripts/install.sh" "${ARGS[@]}"
 printf '%s\n' '{"sentinel":"preserve-local-settings"}' > /var/lib/zabbix-gitkeeper/private/settings.json
 before=$(sha256sum /var/lib/zabbix-gitkeeper/private/settings.json)
 cron_before=$(sha256sum /etc/cron.d/zabbix-gitkeeper)
-bash "$SOURCE/scripts/install.sh" "${ARGS[@]}"
-[[ $(sha256sum /var/lib/zabbix-gitkeeper/private/settings.json) == "$before" ]]
-[[ $(sha256sum /etc/cron.d/zabbix-gitkeeper) == "$cron_before" ]]
+for version in 7.0.0 7.4.15 8.0.0; do
+    printf '%s\n' "<?php define(\"ZABBIX_VERSION\", \"$version\");" > "$TEMP_ROOT/frontend/include/defines.inc.php"
+    bash "$SOURCE/scripts/install.sh" "${ARGS[@]}"
+    [[ $(sha256sum /var/lib/zabbix-gitkeeper/private/settings.json) == "$before" ]]
+    [[ $(sha256sum /etc/cron.d/zabbix-gitkeeper) == "$cron_before" ]]
+done
+for version in 7.2.0 8.2.0 8.0.0rc1; do
+    printf '%s\n' "<?php define(\"ZABBIX_VERSION\", \"$version\");" > "$TEMP_ROOT/frontend/include/defines.inc.php"
+    if bash "$SOURCE/scripts/install.sh" "${ARGS[@]}"; then
+        echo "Installer accepted unreviewed version $version" >&2
+        exit 1
+    fi
+    [[ $(sha256sum /var/lib/zabbix-gitkeeper/private/settings.json) == "$before" ]]
+done
 [[ $(grep -c '^\* \* \* \* \* ' /etc/cron.d/zabbix-gitkeeper) == 1 ]]
 if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
     systemctl is-enabled --quiet zabbix-gitkeeper.path

@@ -1,9 +1,10 @@
 # Experimental installation and first snapshot
 
 This implementation targets Linux with Zabbix server and frontend on the same machine.
-Zabbix **7.0 and 7.4 are targets, not certified versions**. Frontend and partial read-only collector
-checks and the updated UI with an existing GitHub connection have run against Zabbix 7.4.15;
-the full fresh installation/OAuth/permission acceptance sequence remains unverified. See [validation](validation.md).
+GitKeeper supports stable Zabbix **7.0 LTS, 7.4 and 8.0 LTS** within the documented collector scope.
+The current live test host runs **8.0.0** (Ubuntu package `8.0.0-1+ubuntu24.04`). Earlier live evidence
+covers 7.4.15; 7.0 remains fixture/source-reviewed, without a live instance tested in this session.
+See [validation](validation.md) for installation, browser, export and publication evidence and limits.
 There is no stable release or selected project license. Use a disposable instance for acceptance testing.
 
 ## Prerequisites
@@ -13,6 +14,39 @@ There is no stable release or selected project license. Use a disposable instanc
 - The real frontend root and real PHP-FPM/Apache process user. Do not guess them: inspect the active web/PHP service configuration. The frontend root contains `zabbix.php`, `include/defines.inc.php` and `modules/`.
 - Your registered GitHub App and its **actual Client ID**. Configure it in the guided App step in Panoramica after installing the worker. No App, client secret, signing key or PAT is distributed.
 - A private destination repository and App/user write access. Never use the public source repository as a backup destination.
+
+## Zabbix API role requirements, including 8.0
+
+Use an active Super admin owner's API token. The read-only `authentication.get` probe is required
+even when exporting only hosts: lower-privilege getters can silently filter objects, so successful
+counts alone cannot establish complete instance visibility. GitKeeper never changes the account or role.
+
+In **Users → User roles**, verify **Access to API** is enabled and the allow/deny list permits the
+selected methods. Zabbix 8.0 changes the default API access to disabled and an empty Allow list to
+deny all methods. Upgraded empty allow lists may contain `*`; review the actual role rather than
+assuming the token grants access. Method restrictions apply to valid tokens too.
+
+Required direct read methods:
+
+- Always: `apiinfo.version` (unauthenticated) and `authentication.get` (Super admin visibility probe).
+- Hosts/templates: `host.get`/`hostgroup.get` or `template.get`/`templategroup.get`, `item.get`,
+  `trigger.get`, `discoveryrule.get`, `itemprototype.get`, `triggerprototype.get`, `hostprototype.get`,
+  and `configuration.export`. On 7.4/8.0, also `discoveryruleprototype.get`.
+- Actions: `action.get`; media types: `mediatype.get`; users/access: `user.get`, `usergroup.get`, `role.get`.
+- Template `used` scope additionally requires `host.get`, `hostprototype.get`, `action.get`, regardless
+  of other selected categories. Preview `all` reads `template.get`; preview `used` reads these relations too.
+
+Every synchronization rechecks required methods before staging. Native export authorization is probed
+with explicit empty host IDs, without exporting monitoring objects. Actual native reads still must succeed.
+An invalid/expired/revoked token is reported as authentication failure; a denied method is named with
+instructions to inspect the role. Neither result can publish a partial snapshot.
+
+The pinned official Python client predates 8.0. GitKeeper replaces its upper-version check with its own
+strict stable-series check **before token login**; 7.2, 8.2, unknown series and prereleases remain rejected.
+There is no administrator switch to bypass this policy and no new runtime dependency.
+
+References: [8.0 API changes](https://www.zabbix.com/documentation/8.0/en/manual/api/changes),
+[role rules](https://www.zabbix.com/documentation/8.0/en/manual/api/reference/role/object).
 
 ## Register the GitHub App
 
@@ -184,7 +218,10 @@ Network/rate-limit failures use bounded retries/backoff; rejected permissions, u
 incomplete enumeration and Git failures stop scheduling until **Sync now** or **Save & Sync**.
 Git remote transport failures/timeouts also use the bounded retry path; protected-branch and ordinary
 Git rejections stop without force-pushing.
-Refresh failure/revocation shows **Reconnect GitHub**. Git stderr and raw API errors are never exposed.
+Refresh failure/revocation shows **Reconnect GitHub**. Git stderr and raw API errors are never exposed. The UI distinguishes unsupported versions, token authentication,
+denied methods, incompatible API parameters, unrecognized structures, incomplete exports, filesystem access
+and Git/GitHub failures. The journal records exception classes and GitKeeper code locations, including the
+original wrapped failure; it excludes exception text, response/request bodies, export contents and credentials.
 Inspect the declared coverage/policy to diagnose unsupported fields, without uploading raw exports.
 
 ```sh
